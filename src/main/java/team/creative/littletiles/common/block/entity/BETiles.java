@@ -993,12 +993,16 @@ public class BETiles extends BlockEntityCreative implements IGridBased, ILittleB
         }
         
         public SideState calculateState(Facing facing, LittleBox box) {
+            if (tiles == null) {
+                return SideState.SEETHROUGH;
+            }
+
             LittleVec size = box.getSize();
             boolean[][][] filled = new boolean[size.x][size.y][size.z];
             
             boolean translucent = false;
             boolean noclip = false;
-            
+
             for (Pair<IParentCollection, LittleTile> pair : BETiles.this.tiles.allTiles())
                 if (pair.value.fillInSpaceInaccurate(box, filled)) {
                     if (!pair.value.doesProvideSolidFace())
