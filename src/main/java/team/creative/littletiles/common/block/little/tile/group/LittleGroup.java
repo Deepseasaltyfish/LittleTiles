@@ -1,12 +1,7 @@
 package team.creative.littletiles.common.block.little.tile.group;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
+import java.util.*;
 import java.util.Map.Entry;
-import java.util.Set;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
@@ -780,6 +775,63 @@ public class LittleGroup implements Bunch<LittleTile>, IGridBased {
         
         for (LittleGroup child : children.all())
             child.exclude(cutter);
+    }
+
+
+    public LittleGroup voxelize() {
+        // 1. 确定最高精度
+        int targetSize = getSmallest();
+        LittleGrid targetGrid = LittleGrid.get(targetSize);
+
+        // 2. 复制并统一网格
+        LittleGroup copy = copy();
+        copy.convertTo(targetGrid);
+
+        // 3. 按材质分组存储位置（使用 Set 去重）
+        List<LittleTile> materialList = new ArrayList<>();
+        Map<LittleTile, Integer> materialIndexMap = new HashMap<>();
+        Map<Integer, Set<Long>> materialPositions = new HashMap<>();
+
+        for (LittleTile tile : copy.allTiles()) {
+            Integer idx = materialIndexMap.get(tile);
+            if (idx == null) {
+                idx = materialList.size();
+                materialList.add(tile);
+                materialIndexMap.put(tile, idx);
+                materialPositions.put(idx, new HashSet<>());
+            }
+            Set<Long> positions = materialPositions.get(idx);
+            for (LittleBox box : tile) {
+                for (int x = box.minX; x < box.maxX; x++) {
+                    for (int y = box.minY; y < box.maxY; y++) {
+                        for (int z = box.minZ; z < box.maxZ; z++) {
+                            positions.add(LittleVoxelUtils.encode(x, y, z));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. 构建新组
+        LittleGroup result = new LittleGroup(); // 无参构造，无 structure 无 children
+        for (int i = 0; i < materialList.size(); i++) {
+            LittleTile template = materialList.get(i);
+            Set<Long> positions = materialPositions.get(i);
+            if (positions == null || positions.isEmpty()) continue;
+
+            List<LittleBox> boxes = new ArrayList<>(positions.size());
+            for (long key : positions) {
+                int[] pos = LittleVoxelUtils.decode(key);
+                boxes.add(new LittleBox(pos[0], pos[1], pos[2], pos[0] + 1, pos[1] + 1, pos[2] + 1));
+            }
+
+            LittleTile newTile = new LittleTile(template.getState(), template.color, boxes);
+            newTile.combine(targetGrid, true); // 合并优化
+            result.addTile(targetGrid, newTile);
+        }
+
+        result.convertToSmallest();
+        return result;
     }
     
 }

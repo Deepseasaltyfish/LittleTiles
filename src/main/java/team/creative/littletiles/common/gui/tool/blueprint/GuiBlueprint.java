@@ -43,6 +43,7 @@ import team.creative.littletiles.LittleTilesGuiRegistry;
 import team.creative.littletiles.LittleTilesRegistry;
 import team.creative.littletiles.api.common.tool.ILittleTool;
 import team.creative.littletiles.common.block.little.tile.group.LittleGroup;
+import team.creative.littletiles.common.block.little.tile.group.LittleVoxelUtils;
 import team.creative.littletiles.common.grid.LittleGrid;
 import team.creative.littletiles.common.gui.control.animation.GuiAnimationPanel;
 import team.creative.littletiles.common.gui.tool.GuiConfigure;
@@ -273,6 +274,73 @@ public class GuiBlueprint extends GuiConfigure {
         
         GuiLeftRightBox bottom = new GuiLeftRightBox();
         add(bottom.setVAlign(VAlign.CENTER).setExpandableX());
+
+
+
+        //test
+        // ----- 旋转控制面板 -----
+        GuiParent rotateContainer = new GuiParent(GuiFlow.FIT_X);
+        rotateContainer.setVAlign(VAlign.CENTER);
+        rotateContainer.add(new GuiLabel("rotLabel").setTranslate("gui.blueprint.rotate.label"));
+
+// 三个角度输入框（单位：度）
+        GuiTextfield yawField = new GuiTextfield("yaw", "0").setDim(40, 15);
+        yawField.setTooltip("yaw");
+        rotateContainer.add(yawField);
+
+        GuiTextfield pitchField = new GuiTextfield("pitch", "0").setDim(40, 15);
+        pitchField.setTooltip("pitch");
+        rotateContainer.add(pitchField);
+
+        GuiTextfield rollField = new GuiTextfield("roll", "0").setDim(40, 15);
+        rollField.setTooltip("roll");
+        rotateContainer.add(rollField);
+
+// 应用旋转按钮
+        GuiButton applyRotate = (GuiButton) new GuiButton("applyRotate", x -> {
+            try {
+                float yawDeg = Float.parseFloat(yawField.getText());
+                float pitchDeg = Float.parseFloat(pitchField.getText());
+                float rollDeg = Float.parseFloat(rollField.getText());
+
+                // 转换为弧度
+                float yaw = (float) Math.toRadians(yawDeg);
+                float pitch = (float) Math.toRadians(pitchDeg);
+                float roll = (float) Math.toRadians(rollDeg);
+
+                // 加载当前蓝图内容
+                LittleGroup groupTemp = LittleGroup.load(ItemLittleBlueprint.getContent(tool.get()));
+                if (groupTemp.isEmptyIncludeChildren()) {
+                    // 提示无内容
+                    return;
+                }
+
+                // 执行体素旋转（注意：该方法内部会体素化并任意角度旋转）
+                LittleGroup rotated = LittleVoxelUtils.rotateVoxels(groupTemp, yaw, pitch, roll);
+
+                // 保存到物品
+                CompoundTag stackTag = ILittleTool.getData(tool.get());
+                stackTag.put(ItemLittleBlueprint.CONTENT_KEY, LittleGroup.save(rotated));
+                ILittleTool.setData(tool.get(), stackTag);
+                tool.changed();
+
+                // 刷新界面
+                refresh();
+
+            } catch (NumberFormatException e) {
+                // 输入无效，弹出提示（可通过 GuiDialogHandler 显示错误）
+                GuiDialogHandler.openDialog(getIntegratedParent(), "rotate_error",
+                        Component.translatable("gui.blueprint.rotate.error"),
+                        (g, b) -> {}, DialogButton.CONFIRM);
+            }
+        }).setTranslate("rotate").setAlign(Align.CENTER).setVAlign(VAlign.CENTER);
+
+        rotateContainer.add(applyRotate);
+        bottom.addRight(rotateContainer);
+        //
+
+
+
         bottom.addLeft(new GuiButton("cancel", x -> closeThisLayer()).setTranslate("gui.cancel"));
         bottom.addLeft(new GuiButton("selection", x -> {
             GuiDialogHandler.openDialog(getIntegratedParent(), "remove_content", Component.translatable("gui.blueprint.dialog.clear"), (g, b) -> {
@@ -306,6 +374,18 @@ public class GuiBlueprint extends GuiConfigure {
         animation.tick();
         if (storage != null)
             storage.tick();
+    }
+
+    public void refresh() {
+        // 清空树根并重建
+        tree.root().clear();
+        LittleGroup group = LittleGroup.load(ItemLittleBlueprint.getContent(tool.get()));
+        buildStructureTree(tree, tree.root(), group, 0);
+        tree.updateTree();
+        tree.selectFirst();
+
+        // 重置测试报告
+        testReport.setTitle(Component.empty());
     }
     
     @Override

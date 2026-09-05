@@ -28,6 +28,7 @@ import team.creative.littletiles.client.tool.LittleTool;
 import team.creative.littletiles.client.tool.LittleToolPlacer;
 import team.creative.littletiles.client.tool.LittleToolSelection;
 import team.creative.littletiles.common.block.little.tile.group.LittleGroup;
+import team.creative.littletiles.common.block.little.tile.group.LittleVoxelUtils;
 import team.creative.littletiles.common.block.mc.BlockTile;
 import team.creative.littletiles.common.gui.tool.GuiConfigure;
 import team.creative.littletiles.common.gui.tool.blueprint.GuiBlueprint;
@@ -86,6 +87,15 @@ public class ItemLittleBlueprint extends Item implements ILittlePlacer, ILittleS
     public void saveTiles(ItemStack stack, LittleGroup group) {
         CompoundTag stackTag = ILittleTool.getData(stack);
         stackTag.put(ItemLittleBlueprint.CONTENT_KEY, LittleGroup.save(group));
+        ILittleTool.setData(stack, stackTag);
+    }
+
+    public void rotateBlueprint(ItemStack stack, float yaw, float pitch, float roll) {
+        if (!hasTiles(stack)) return;
+        LittleGroup group = getTiles(stack);
+        LittleGroup rotated = LittleVoxelUtils.rotateVoxels(group, yaw, pitch, roll);
+        CompoundTag stackTag = ILittleTool.getData(stack);
+        stackTag.put(CONTENT_KEY, LittleGroup.save(rotated));
         ILittleTool.setData(stack, stackTag);
     }
     
