@@ -89,15 +89,6 @@ public class ItemLittleBlueprint extends Item implements ILittlePlacer, ILittleS
         stackTag.put(ItemLittleBlueprint.CONTENT_KEY, LittleGroup.save(group));
         ILittleTool.setData(stack, stackTag);
     }
-
-    public void rotateBlueprint(ItemStack stack, float yaw, float pitch, float roll) {
-        if (!hasTiles(stack)) return;
-        LittleGroup group = getTiles(stack);
-        LittleGroup rotated = LittleVoxelUtils.rotateVoxels(group, yaw, pitch, roll);
-        CompoundTag stackTag = ILittleTool.getData(stack);
-        stackTag.put(CONTENT_KEY, LittleGroup.save(rotated));
-        ILittleTool.setData(stack, stackTag);
-    }
     
     @Override
     public boolean shouldRenderInHand(ItemStack stack) {

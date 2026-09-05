@@ -278,12 +278,10 @@ public class GuiBlueprint extends GuiConfigure {
 
 
         //test
-        // ----- 旋转控制面板 -----
         GuiParent rotateContainer = new GuiParent(GuiFlow.FIT_X);
         rotateContainer.setVAlign(VAlign.CENTER);
-        rotateContainer.add(new GuiLabel("rotLabel").setTranslate("gui.blueprint.rotate.label"));
+        rotateContainer.add(new GuiLabel("rotLabel").setTranslate("rotate"));
 
-// 三个角度输入框（单位：度）
         GuiTextfield yawField = new GuiTextfield("yaw", "0").setDim(40, 15);
         yawField.setTooltip("yaw");
         rotateContainer.add(yawField);
@@ -296,41 +294,32 @@ public class GuiBlueprint extends GuiConfigure {
         rollField.setTooltip("roll");
         rotateContainer.add(rollField);
 
-// 应用旋转按钮
         GuiButton applyRotate = (GuiButton) new GuiButton("applyRotate", x -> {
             try {
                 float yawDeg = Float.parseFloat(yawField.getText());
                 float pitchDeg = Float.parseFloat(pitchField.getText());
                 float rollDeg = Float.parseFloat(rollField.getText());
 
-                // 转换为弧度
                 float yaw = (float) Math.toRadians(yawDeg);
                 float pitch = (float) Math.toRadians(pitchDeg);
                 float roll = (float) Math.toRadians(rollDeg);
 
-                // 加载当前蓝图内容
                 LittleGroup groupTemp = LittleGroup.load(ItemLittleBlueprint.getContent(tool.get()));
                 if (groupTemp.isEmptyIncludeChildren()) {
-                    // 提示无内容
                     return;
                 }
 
-                // 执行体素旋转（注意：该方法内部会体素化并任意角度旋转）
                 LittleGroup rotated = LittleVoxelUtils.rotateVoxels(groupTemp, yaw, pitch, roll);
 
-                // 保存到物品
                 CompoundTag stackTag = ILittleTool.getData(tool.get());
                 stackTag.put(ItemLittleBlueprint.CONTENT_KEY, LittleGroup.save(rotated));
                 ILittleTool.setData(tool.get(), stackTag);
                 tool.changed();
 
-                // 刷新界面
                 refresh();
-
             } catch (NumberFormatException e) {
-                // 输入无效，弹出提示（可通过 GuiDialogHandler 显示错误）
                 GuiDialogHandler.openDialog(getIntegratedParent(), "rotate_error",
-                        Component.translatable("gui.blueprint.rotate.error"),
+                        Component.translatable("chat.tag.error"),
                         (g, b) -> {}, DialogButton.CONFIRM);
             }
         }).setTranslate("rotate").setAlign(Align.CENTER).setVAlign(VAlign.CENTER);
@@ -377,15 +366,20 @@ public class GuiBlueprint extends GuiConfigure {
     }
 
     public void refresh() {
-        // 清空树根并重建
         tree.root().clear();
         LittleGroup group = LittleGroup.load(ItemLittleBlueprint.getContent(tool.get()));
         buildStructureTree(tree, tree.root(), group, 0);
         tree.updateTree();
         tree.selectFirst();
 
-        // 重置测试报告
+        if (storage != null) {
+            storage.unload();
+            storage = new GuiBlueprintAnimationStorage(tree);
+        }
+
         testReport.setTitle(Component.empty());
+
+        reflow();
     }
     
     @Override
