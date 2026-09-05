@@ -9,6 +9,7 @@ import java.util.stream.IntStream;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 
+import team.creative.littletiles.LittleTiles;
 import team.creative.littletiles.common.block.little.tile.LittleTile;
 import team.creative.littletiles.common.grid.LittleGrid;
 import team.creative.littletiles.common.math.box.LittleBox;
@@ -21,6 +22,8 @@ public class LittleVoxelUtils {
     }
 
     public static LittleGroup rotateVoxels(LittleGroup group, float yaw, float pitch, float roll, int parallelism) {
+        LittleTiles.LOGGER.info("Using {} thread(s) for rotating.", parallelism);
+
         int targetSize = group.getSmallest();
         LittleGrid grid = LittleGrid.get(targetSize);
         LittleGroup copy = group.copy();
