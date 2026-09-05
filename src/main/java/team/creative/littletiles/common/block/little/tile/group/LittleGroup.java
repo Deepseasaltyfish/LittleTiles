@@ -779,15 +779,12 @@ public class LittleGroup implements Bunch<LittleTile>, IGridBased {
 
 
     public LittleGroup voxelize() {
-        // 1. 确定最高精度
         int targetSize = getSmallest();
         LittleGrid targetGrid = LittleGrid.get(targetSize);
 
-        // 2. 复制并统一网格
         LittleGroup copy = copy();
         copy.convertTo(targetGrid);
 
-        // 3. 按材质分组存储位置（使用 Set 去重）
         List<LittleTile> materialList = new ArrayList<>();
         Map<LittleTile, Integer> materialIndexMap = new HashMap<>();
         Map<Integer, Set<Long>> materialPositions = new HashMap<>();
@@ -812,8 +809,7 @@ public class LittleGroup implements Bunch<LittleTile>, IGridBased {
             }
         }
 
-        // 4. 构建新组
-        LittleGroup result = new LittleGroup(); // 无参构造，无 structure 无 children
+        LittleGroup result = new LittleGroup();
         for (int i = 0; i < materialList.size(); i++) {
             LittleTile template = materialList.get(i);
             Set<Long> positions = materialPositions.get(i);
@@ -826,7 +822,7 @@ public class LittleGroup implements Bunch<LittleTile>, IGridBased {
             }
 
             LittleTile newTile = new LittleTile(template.getState(), template.color, boxes);
-            newTile.combine(targetGrid, true); // 合并优化
+            newTile.combine(targetGrid, true);
             result.addTile(targetGrid, newTile);
         }
 

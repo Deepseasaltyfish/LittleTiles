@@ -10,17 +10,10 @@ import team.creative.littletiles.common.math.box.LittleBox;
 
 public class LittleVoxelUtils {
 
-    /**
-     * 对体素组进行任意角度旋转（欧拉角，弧度）。
-     * 输入组会被体素化后再旋转，返回新的体素组（无结构、无子组）。
-     * 使用最近邻重采样，适用于 90° 倍数以外任意角度。
-     */
     public static LittleGroup rotateVoxels(LittleGroup group, float yaw, float pitch, float roll) {
-        // 先体素化
         LittleGroup voxelGroup = group.voxelize();
         LittleGrid grid = voxelGroup.getGrid();
 
-        // 收集所有体素及其材质（扁平化）
         List<LittleTile> tileList = new ArrayList<>();
         List<Long> positionList = new ArrayList<>();
         for (LittleTile tile : voxelGroup.allTiles()) {
@@ -37,7 +30,6 @@ public class LittleVoxelUtils {
         }
         if (positionList.isEmpty()) return new LittleGroup();
 
-        // 计算原始包围盒中心（体素中心坐标）
         int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
         int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
         for (long key : positionList) {
@@ -50,19 +42,16 @@ public class LittleVoxelUtils {
         float centerY = (minY + maxY) * 0.5f;
         float centerZ = (minZ + maxZ) * 0.5f;
 
-        // 构建旋转矩阵（顺序：绕 X 轴 pitch，绕 Y 轴 yaw，绕 Z 轴 roll）
-        // JOML 的 rotationXYZ(float angleX, float angleY, float angleZ)
         Matrix4f rot = new Matrix4f().rotationXYZ(pitch, yaw, roll);
 
-        // 旋转体素，按材质分组
         Map<LittleTile, Set<Long>> rotatedMap = new HashMap<>();
-        Vector3f vec = new Vector3f(); // 复用向量对象，减少分配
+        Vector3f vec = new Vector3f();
         for (int i = 0; i < positionList.size(); i++) {
             LittleTile tile = tileList.get(i);
             int[] p = decode(positionList.get(i));
-            // 平移至中心，应用旋转，再平移回
+
             vec.set(p[0] + 0.5f - centerX, p[1] + 0.5f - centerY, p[2] + 0.5f - centerZ);
-            rot.transformPosition(vec);           // 直接修改 vec
+            rot.transformPosition(vec);
             vec.add(centerX, centerY, centerZ);
             int nx = Math.round(vec.x());
             int ny = Math.round(vec.y());
@@ -71,7 +60,6 @@ public class LittleVoxelUtils {
             rotatedMap.computeIfAbsent(tile, k -> new HashSet<>()).add(nkey);
         }
 
-        // 构建新组
         LittleGroup result = new LittleGroup();
         for (Map.Entry<LittleTile, Set<Long>> entry : rotatedMap.entrySet()) {
             LittleTile template = entry.getKey();
@@ -89,7 +77,6 @@ public class LittleVoxelUtils {
         return result;
     }
 
-    // 编码/解码（同前）
     public static long encode(int x, int y, int z) {
         return (((long)x) << 32) | (((long)y) << 16) | (z & 0xFFFFL);
     }
