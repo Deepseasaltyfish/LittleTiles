@@ -785,24 +785,15 @@ public class LittleGroup implements Bunch<LittleTile>, IGridBased {
         LittleGroup copy = copy();
         copy.convertTo(targetGrid);
 
-        List<LittleTile> materialList = new ArrayList<>();
-        Map<LittleTile, Integer> materialIndexMap = new HashMap<>();
-        Map<Integer, Set<Long>> materialPositions = new HashMap<>();
+        Map<LittleTile, Set<LittleVec>> materialMap = new HashMap<>();
 
         for (LittleTile tile : copy.allTiles()) {
-            Integer idx = materialIndexMap.get(tile);
-            if (idx == null) {
-                idx = materialList.size();
-                materialList.add(tile);
-                materialIndexMap.put(tile, idx);
-                materialPositions.put(idx, new HashSet<>());
-            }
-            Set<Long> positions = materialPositions.get(idx);
             for (LittleBox box : tile) {
                 for (int x = box.minX; x < box.maxX; x++) {
                     for (int y = box.minY; y < box.maxY; y++) {
                         for (int z = box.minZ; z < box.maxZ; z++) {
-                            positions.add(LittleVoxelUtils.encode(x, y, z));
+                            materialMap.computeIfAbsent(tile, k -> new HashSet<>())
+                                    .add(new LittleVec(x, y, z));
                         }
                     }
                 }
@@ -810,17 +801,12 @@ public class LittleGroup implements Bunch<LittleTile>, IGridBased {
         }
 
         LittleGroup result = new LittleGroup();
-        for (int i = 0; i < materialList.size(); i++) {
-            LittleTile template = materialList.get(i);
-            Set<Long> positions = materialPositions.get(i);
-            if (positions == null || positions.isEmpty()) continue;
-
-            List<LittleBox> boxes = new ArrayList<>(positions.size());
-            for (long key : positions) {
-                int[] pos = LittleVoxelUtils.decode(key);
-                boxes.add(new LittleBox(pos[0], pos[1], pos[2], pos[0] + 1, pos[1] + 1, pos[2] + 1));
+        for (Map.Entry<LittleTile, Set<LittleVec>> entry : materialMap.entrySet()) {
+            LittleTile template = entry.getKey();
+            List<LittleBox> boxes = new ArrayList<>();
+            for (LittleVec v : entry.getValue()) {
+                boxes.add(new LittleBox(v.x, v.y, v.z, v.x + 1, v.y + 1, v.z + 1));
             }
-
             LittleTile newTile = new LittleTile(template.getState(), template.color, boxes);
             newTile.combine(targetGrid, true);
             result.addTile(targetGrid, newTile);
