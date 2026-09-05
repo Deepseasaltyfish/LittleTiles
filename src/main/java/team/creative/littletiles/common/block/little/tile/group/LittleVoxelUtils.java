@@ -149,27 +149,53 @@ public class LittleVoxelUtils {
         LittleTiles.LOGGER.warn("阶段6-并行体素采样 (线程数: {}): {} ms，命中体素数: {}", threads, System.currentTimeMillis() - stageStart,
                 resultMap.values().stream().mapToInt(Set::size).sum());
 
-        // 7. 构建新组 - 跳过合并，直接添加单位体素
+        // 7. 构建新组 - 快速合并（按 X 方向合并连续段）
         stageStart = System.currentTimeMillis();
 
         LittleGroup result = new LittleGroup();
-        int totalBoxesAdded = 0;
+        int totalBoxesAfter = 0;
 
         for (Map.Entry<LittleTile, Set<LittleVec>> entry : resultMap.entrySet()) {
             LittleTile template = entry.getKey();
             Set<LittleVec> positions = entry.getValue();
             if (positions.isEmpty()) continue;
 
-            List<LittleBox> boxes = new ArrayList<>(positions.size());
-            for (LittleVec v : positions) {
-                boxes.add(new LittleBox(v.x, v.y, v.z, v.x + 1, v.y + 1, v.z + 1));
+            // 转换为列表并排序（按 y, z, x 排序）
+            List<LittleVec> sorted = new ArrayList<>(positions);
+            sorted.sort((a, b) -> {
+                if (a.y != b.y) return Integer.compare(a.y, b.y);
+                if (a.z != b.z) return Integer.compare(a.z, b.z);
+                return Integer.compare(a.x, b.x);
+            });
+
+            List<LittleBox> boxes = new ArrayList<>();
+            int i = 0;
+            while (i < sorted.size()) {
+                LittleVec first = sorted.get(i);
+                int runStartX = first.x;
+                int y = first.y;
+                int z = first.z;
+                int runEndX = runStartX + 1;
+                i++;
+                // 合并同一行（y,z）上连续的 x
+                while (i < sorted.size()) {
+                    LittleVec next = sorted.get(i);
+                    if (next.y == y && next.z == z && next.x == runEndX) {
+                        runEndX++;
+                        i++;
+                    } else {
+                        break;
+                    }
+                }
+                boxes.add(new LittleBox(runStartX, y, z, runEndX, y + 1, z + 1));
             }
+
             LittleTile newTile = new LittleTile(template.getState(), template.color, boxes);
             result.addTileFast(grid, newTile);
-            totalBoxesAdded += boxes.size();
+            totalBoxesAfter += boxes.size();
         }
 
-        LittleTiles.LOGGER.warn("阶段7-构建新组 (跳过合并) 完成 (tiles: {}, boxes: {}): {} ms", result.totalTiles(), totalBoxesAdded,
+        LittleTiles.LOGGER.warn("阶段7-构建新组 (快速合并X方向) 完成 (tiles: {}, boxes: {}): {} ms", result.totalTiles(), totalBoxesAfter,
                 System.currentTimeMillis() - stageStart);
 
         // 8. 转换并归零（不变）
