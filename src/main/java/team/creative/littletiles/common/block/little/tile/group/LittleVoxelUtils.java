@@ -20,7 +20,7 @@ public class LittleVoxelUtils {
         LittleGroup voxelGroup = group.voxelize();
         LittleGrid grid = voxelGroup.getGrid();
 
-        // 收集所有体素及其材质
+        // 收集所有体素及其材质（扁平化）
         List<LittleTile> tileList = new ArrayList<>();
         List<Long> positionList = new ArrayList<>();
         for (LittleTile tile : voxelGroup.allTiles()) {
@@ -37,7 +37,7 @@ public class LittleVoxelUtils {
         }
         if (positionList.isEmpty()) return new LittleGroup();
 
-        // 计算包围盒中心（基于原始坐标）
+        // 计算原始包围盒中心（体素中心坐标）
         int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
         int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
         for (long key : positionList) {
@@ -50,25 +50,23 @@ public class LittleVoxelUtils {
         float centerY = (minY + maxY) * 0.5f;
         float centerZ = (minZ + maxZ) * 0.5f;
 
-        // 构建旋转矩阵（顺序：ZYX，即先绕 X 轴旋转 roll，再绕 Y 轴 yaw，最后绕 Z 轴 pitch）
-        Matrix4f rot = new Matrix4f().rotateZYX(roll, pitch, yaw); // JOML 方法：rotateZYX(angleZ, angleY, angleX)
-        // 或者显式构建：rot.rotationZYX(roll, pitch, yaw);
+        // 构建旋转矩阵（顺序：绕 X 轴 pitch，绕 Y 轴 yaw，绕 Z 轴 roll）
+        // JOML 的 rotationXYZ(float angleX, float angleY, float angleZ)
+        Matrix4f rot = new Matrix4f().rotationXYZ(pitch, yaw, roll);
 
-        // 存储旋转后的体素（按材质分组）
+        // 旋转体素，按材质分组
         Map<LittleTile, Set<Long>> rotatedMap = new HashMap<>();
+        Vector3f vec = new Vector3f(); // 复用向量对象，减少分配
         for (int i = 0; i < positionList.size(); i++) {
             LittleTile tile = tileList.get(i);
-            long key = positionList.get(i);
-            int[] p = decode(key);
-            // 将坐标平移到中心，应用旋转，再平移回
-            Vector3f vec = new Vector3f(p[0] + 0.5f - centerX, p[1] + 0.5f - centerY, p[2] + 0.5f - centerZ);
-            vec.mul((Vector3fc) rot);
+            int[] p = decode(positionList.get(i));
+            // 平移至中心，应用旋转，再平移回
+            vec.set(p[0] + 0.5f - centerX, p[1] + 0.5f - centerY, p[2] + 0.5f - centerZ);
+            rot.transformPosition(vec);           // 直接修改 vec
             vec.add(centerX, centerY, centerZ);
-            // 四舍五入到最近整数网格
             int nx = Math.round(vec.x());
             int ny = Math.round(vec.y());
             int nz = Math.round(vec.z());
-            // 确保非负（可选，但应允许负值，因为包围盒可能偏移）
             long nkey = encode(nx, ny, nz);
             rotatedMap.computeIfAbsent(tile, k -> new HashSet<>()).add(nkey);
         }
