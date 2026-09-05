@@ -3,7 +3,6 @@ package team.creative.littletiles.common.block.little.tile.group;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ForkJoinPool;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
 import org.joml.Matrix4f;
@@ -22,28 +21,28 @@ public class LittleVoxelUtils {
     private static final int BVH_LEAF_SIZE = 8;
 
     /**
-     * 旋转体素组（自动使用 CPU 核心数并行）
+     * Rotates a voxel group using all available CPU cores.
      */
     public static LittleGroup rotateVoxels(LittleGroup group, float yaw, float pitch, float roll) {
         return rotateVoxels(group, yaw, pitch, roll, Runtime.getRuntime().availableProcessors());
     }
 
     /**
-     * 旋转体素组（指定并行线程数）
+     * Rotates a voxel group with specified parallelism.
      */
     public static LittleGroup rotateVoxels(LittleGroup group, float yaw, float pitch, float roll, int parallelism) {
         long startTotal = System.currentTimeMillis();
         long stageStart;
 
-        // 1. 复制并统一网格
+        // 1. Copy and unify grid
         stageStart = System.currentTimeMillis();
         int targetSize = group.getSmallest();
         LittleGrid grid = LittleGrid.get(targetSize);
         LittleGroup copy = group.copy();
         copy.convertTo(grid);
-        LittleTiles.LOGGER.warn("阶段1-复制与网格转换: {} ms", System.currentTimeMillis() - stageStart);
+        LittleTiles.LOGGER.info("Stage 1 - Copy & grid conversion: {} ms", System.currentTimeMillis() - stageStart);
 
-        // 2. 提取源盒子
+        // 2. Extract source boxes
         stageStart = System.currentTimeMillis();
         List<SourceBox> sourceBoxes = new ArrayList<>();
         for (LittleTile tile : copy.allTiles()) {
@@ -52,17 +51,17 @@ public class LittleVoxelUtils {
             }
         }
         if (sourceBoxes.isEmpty()) {
-            LittleTiles.LOGGER.warn("源盒子为空，返回空组");
+            LittleTiles.LOGGER.info("Source boxes empty, returning empty group");
             return new LittleGroup();
         }
-        LittleTiles.LOGGER.warn("阶段2-提取源盒子 (数量: {}): {} ms", sourceBoxes.size(), System.currentTimeMillis() - stageStart);
+        LittleTiles.LOGGER.info("Stage 2 - Extracted {} source boxes: {} ms", sourceBoxes.size(), System.currentTimeMillis() - stageStart);
 
-        // 3. 构建 BVH
+        // 3. Build BVH
         stageStart = System.currentTimeMillis();
         BVHNode root = buildBVH(sourceBoxes);
-        LittleTiles.LOGGER.warn("阶段3-构建BVH: {} ms", System.currentTimeMillis() - stageStart);
+        LittleTiles.LOGGER.info("Stage 3 - BVH construction: {} ms", System.currentTimeMillis() - stageStart);
 
-        // 4. 计算旋转后的包围盒
+        // 4. Compute rotated bounding box
         stageStart = System.currentTimeMillis();
         Matrix4f rot = new Matrix4f().rotationXYZ(pitch, yaw, roll);
         Vector3f vec = new Vector3f();
@@ -100,18 +99,18 @@ public class LittleVoxelUtils {
 
         long totalVoxelsLong = (long)(endX - startX) * (long)(endY - startY) * (long)(endZ - startZ);
         if (totalVoxelsLong <= 0 || totalVoxelsLong > Integer.MAX_VALUE) {
-            LittleTiles.LOGGER.warn("旋转区域过大，体素数 {} 超过 int 范围，或非正数，返回空组", totalVoxelsLong);
+            LittleTiles.LOGGER.info("Bounding box too large ({} voxels), returning empty group", totalVoxelsLong);
             return new LittleGroup();
         }
         int totalVoxels = (int)totalVoxelsLong;
-        LittleTiles.LOGGER.warn("阶段4-包围盒计算完成，目标体素数: {}，耗时: {} ms", totalVoxels, System.currentTimeMillis() - stageStart);
+        LittleTiles.LOGGER.info("Stage 4 - Bounding box computed, {} target voxels: {} ms", totalVoxels, System.currentTimeMillis() - stageStart);
 
-        // 5. 逆矩阵
+        // 5. Invert rotation matrix
         stageStart = System.currentTimeMillis();
         Matrix4f invRot = new Matrix4f(rot).invert();
-        LittleTiles.LOGGER.warn("阶段5-逆矩阵计算: {} ms", System.currentTimeMillis() - stageStart);
+        LittleTiles.LOGGER.info("Stage 5 - Matrix inversion: {} ms", System.currentTimeMillis() - stageStart);
 
-        // 6. 并行处理
+        // 6. Parallel sampling
         stageStart = System.currentTimeMillis();
         Map<LittleTile, Set<LittleVec>> resultMap = new ConcurrentHashMap<>();
         int threads = parallelism > 0 ? parallelism : Runtime.getRuntime().availableProcessors();
@@ -146,12 +145,11 @@ public class LittleVoxelUtils {
         } finally {
             pool.shutdown();
         }
-        LittleTiles.LOGGER.warn("阶段6-并行体素采样 (线程数: {}): {} ms，命中体素数: {}", threads, System.currentTimeMillis() - stageStart,
-                resultMap.values().stream().mapToInt(Set::size).sum());
+        int hitCount = resultMap.values().stream().mapToInt(Set::size).sum();
+        LittleTiles.LOGGER.info("Stage 6 - Parallel sampling ({} threads): {} ms, {} voxels hit", threads, System.currentTimeMillis() - stageStart, hitCount);
 
-        // 7. 构建新组 - 快速合并（按 X 方向合并连续段）
+        // 7. Build result group with fast X-axis run-length merging
         stageStart = System.currentTimeMillis();
-
         LittleGroup result = new LittleGroup();
         int totalBoxesAfter = 0;
 
@@ -160,7 +158,6 @@ public class LittleVoxelUtils {
             Set<LittleVec> positions = entry.getValue();
             if (positions.isEmpty()) continue;
 
-            // 转换为列表并排序（按 y, z, x 排序）
             List<LittleVec> sorted = new ArrayList<>(positions);
             sorted.sort((a, b) -> {
                 if (a.y != b.y) return Integer.compare(a.y, b.y);
@@ -177,7 +174,6 @@ public class LittleVoxelUtils {
                 int z = first.z;
                 int runEndX = runStartX + 1;
                 i++;
-                // 合并同一行（y,z）上连续的 x
                 while (i < sorted.size()) {
                     LittleVec next = sorted.get(i);
                     if (next.y == y && next.z == z && next.x == runEndX) {
@@ -195,24 +191,25 @@ public class LittleVoxelUtils {
             totalBoxesAfter += boxes.size();
         }
 
-        LittleTiles.LOGGER.warn("阶段7-构建新组 (快速合并X方向) 完成 (tiles: {}, boxes: {}): {} ms", result.totalTiles(), totalBoxesAfter,
-                System.currentTimeMillis() - stageStart);
+        LittleTiles.LOGGER.info("Stage 7 - Group construction (fast merge): {} tiles, {} boxes: {} ms",
+                result.totalTiles(), totalBoxesAfter, System.currentTimeMillis() - stageStart);
 
-        // 8. 转换并归零（不变）
+        // 8. Finalize grid and center
         stageStart = System.currentTimeMillis();
         result.convertToSmallest();
         translateToOrigin(result);
-        LittleTiles.LOGGER.warn("阶段8-转换网格与归零: {} ms", System.currentTimeMillis() - stageStart);
+        LittleTiles.LOGGER.info("Stage 8 - Grid normalization & translation: {} ms", System.currentTimeMillis() - stageStart);
 
-        LittleTiles.LOGGER.warn("旋转总耗时: {} ms", System.currentTimeMillis() - startTotal);
+        LittleTiles.LOGGER.info("Total rotation time: {} ms", System.currentTimeMillis() - startTotal);
         return result;
     }
 
-    // ---------- BVH 实现 ----------
+    // ========== BVH Implementation ==========
+
     private static class BVHNode {
         float minX, minY, minZ, maxX, maxY, maxZ;
         BVHNode left, right;
-        List<SourceBox> boxes; // 叶子节点使用
+        List<SourceBox> boxes;
 
         BVHNode(List<SourceBox> boxes) {
             this.boxes = boxes;
@@ -223,7 +220,6 @@ public class LittleVoxelUtils {
             this.left = left;
             this.right = right;
             this.boxes = null;
-            // 合并包围盒
             minX = Math.min(left.minX, right.minX);
             minY = Math.min(left.minY, right.minY);
             minZ = Math.min(left.minZ, right.minZ);
@@ -263,7 +259,6 @@ public class LittleVoxelUtils {
             return new BVHNode(boxes);
         }
 
-        // 计算包围盒
         float minX = Float.POSITIVE_INFINITY, maxX = Float.NEGATIVE_INFINITY;
         float minY = Float.POSITIVE_INFINITY, maxY = Float.NEGATIVE_INFINITY;
         float minZ = Float.POSITIVE_INFINITY, maxZ = Float.NEGATIVE_INFINITY;
@@ -276,7 +271,6 @@ public class LittleVoxelUtils {
         float extentY = maxY - minY;
         float extentZ = maxZ - minZ;
 
-        // 选择最长轴分割
         int axis;
         if (extentX >= extentY && extentX >= extentZ) axis = 0;
         else if (extentY >= extentX && extentY >= extentZ) axis = 1;
@@ -302,12 +296,11 @@ public class LittleVoxelUtils {
             else rightList.add(sb);
         }
 
-        // 防止某一边为空
         if (leftList.isEmpty() || rightList.isEmpty()) {
             return new BVHNode(boxes);
         }
 
-        return new BVHNode(buildBVH(leftList, depth+1), buildBVH(rightList, depth+1));
+        return new BVHNode(buildBVH(leftList, depth + 1), buildBVH(rightList, depth + 1));
     }
 
     private static LittleTile queryBVH(BVHNode node, float x, float y, float z) {
@@ -318,13 +311,13 @@ public class LittleVoxelUtils {
             }
             return null;
         }
-        // 内部节点：先查左，再查右
         LittleTile result = queryBVH(node.left, x, y, z);
         if (result != null) return result;
         return queryBVH(node.right, x, y, z);
     }
 
-    // ---------- 辅助类 ----------
+    // ========== Helper Classes ==========
+
     private static class SourceBox {
         final LittleBox box;
         final LittleTile tile;
@@ -333,7 +326,6 @@ public class LittleVoxelUtils {
         SourceBox(LittleBox box, LittleTile tile) {
             this.box = box;
             this.tile = tile;
-            // 使用浮点数并添加小容差
             this.minX = box.minX - EPSILON;
             this.minY = box.minY - EPSILON;
             this.minZ = box.minZ - EPSILON;
