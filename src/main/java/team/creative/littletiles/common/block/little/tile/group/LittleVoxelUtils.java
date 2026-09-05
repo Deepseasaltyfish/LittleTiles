@@ -73,10 +73,8 @@ public class LittleVoxelUtils {
         int totalVoxels = (endX - startX) * (endY - startY) * (endZ - startZ);
         if (totalVoxels <= 0) return new LittleGroup();
 
-        // 使用线程安全的映射：材质 -> 位置集合
         Map<LittleTile, Set<LittleVec>> resultMap = new ConcurrentHashMap<>();
 
-        // 并行流或 ForkJoinPool
         int threads = parallelism > 0 ? parallelism : Runtime.getRuntime().availableProcessors();
         ForkJoinPool pool = new ForkJoinPool(threads);
 
@@ -141,7 +139,7 @@ public class LittleVoxelUtils {
         SourceBox(LittleBox box, LittleTile tile) {
             this.box = box;
             this.tile = tile;
-            // 转成 float 以便快速包含检测
+
             this.minX = box.minX - eps;
             this.minY = box.minY - eps;
             this.minZ = box.minZ - eps;
