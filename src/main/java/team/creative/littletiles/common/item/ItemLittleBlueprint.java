@@ -28,7 +28,6 @@ import team.creative.littletiles.client.tool.LittleTool;
 import team.creative.littletiles.client.tool.LittleToolPlacer;
 import team.creative.littletiles.client.tool.LittleToolSelection;
 import team.creative.littletiles.common.block.little.tile.group.LittleGroup;
-import team.creative.littletiles.common.block.little.tile.group.LittleVoxelUtils;
 import team.creative.littletiles.common.block.mc.BlockTile;
 import team.creative.littletiles.common.gui.tool.GuiConfigure;
 import team.creative.littletiles.common.gui.tool.blueprint.GuiBlueprint;
