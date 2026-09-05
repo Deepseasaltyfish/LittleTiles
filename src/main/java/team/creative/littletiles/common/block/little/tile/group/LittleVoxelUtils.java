@@ -149,11 +149,11 @@ public class LittleVoxelUtils {
         LittleTiles.LOGGER.warn("阶段6-并行体素采样 (线程数: {}): {} ms，命中体素数: {}", threads, System.currentTimeMillis() - stageStart,
                 resultMap.values().stream().mapToInt(Set::size).sum());
 
-        // 7. 构建新组 - 先收集所有 tile，不合并
+        // 7. 构建新组 - 跳过合并，直接添加单位体素
         stageStart = System.currentTimeMillis();
 
-        // 临时存储所有待添加的 tile
-        List<LittleTile> tilesToAdd = new ArrayList<>();
+        LittleGroup result = new LittleGroup();
+        int totalBoxesAdded = 0;
 
         for (Map.Entry<LittleTile, Set<LittleVec>> entry : resultMap.entrySet()) {
             LittleTile template = entry.getKey();
@@ -164,21 +164,12 @@ public class LittleVoxelUtils {
             for (LittleVec v : positions) {
                 boxes.add(new LittleBox(v.x, v.y, v.z, v.x + 1, v.y + 1, v.z + 1));
             }
-            // 直接创建 tile，先不合并
             LittleTile newTile = new LittleTile(template.getState(), template.color, boxes);
-            tilesToAdd.add(newTile);
+            result.addTileFast(grid, newTile);
+            totalBoxesAdded += boxes.size();
         }
 
-        // 创建新组并添加所有 tile
-        LittleGroup result = new LittleGroup();
-        for (LittleTile tile : tilesToAdd) {
-            result.addTileFast(grid, tile);
-        }
-
-        // 最后对整个组进行合并优化（如果启用）
-        result.combine(true);
-
-        LittleTiles.LOGGER.warn("阶段7-构建新组完成 (tiles: {}, boxes: {}): {} ms", result.totalTiles(), result.totalBoxes(),
+        LittleTiles.LOGGER.warn("阶段7-构建新组 (跳过合并) 完成 (tiles: {}, boxes: {}): {} ms", result.totalTiles(), totalBoxesAdded,
                 System.currentTimeMillis() - stageStart);
 
         // 8. 转换并归零（不变）
