@@ -1,9 +1,14 @@
 package team.creative.littletiles.common.block.little.tile.group;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.IntStream;
+
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
-import org.joml.Vector3fc;
+
 import team.creative.littletiles.common.block.little.tile.LittleTile;
 import team.creative.littletiles.common.grid.LittleGrid;
 import team.creative.littletiles.common.math.box.LittleBox;
@@ -11,96 +16,143 @@ import team.creative.littletiles.common.math.vec.LittleVec;
 import team.creative.littletiles.common.math.vec.LittleVecGrid;
 
 public class LittleVoxelUtils {
-
     public static LittleGroup rotateVoxels(LittleGroup group, float yaw, float pitch, float roll) {
-        return rotateVoxels(group, yaw, pitch, roll, 2);
+        return rotateVoxels(group, yaw, pitch, roll, Runtime.getRuntime().availableProcessors());
     }
 
-    public static LittleGroup rotateVoxels(LittleGroup group, float yaw, float pitch, float roll, int superSample) {
-        if (superSample < 1) superSample = 1;
+    public static LittleGroup rotateVoxels(LittleGroup group, float yaw, float pitch, float roll, int parallelism) {
+        int targetSize = group.getSmallest();
+        LittleGrid grid = LittleGrid.get(targetSize);
+        LittleGroup copy = group.copy();
+        copy.convertTo(grid);
 
-        LittleGroup voxelGroup = group.voxelize();
-        LittleGrid originalGrid = voxelGroup.getGrid();
-
-        int superSize = originalGrid.count * superSample;
-        LittleGrid superGrid = LittleGrid.get(superSize);
-
-        voxelGroup.convertTo(superGrid);
-
-        Map<LittleTile, Set<LittleVec>> superMap = new HashMap<>();
-        for (LittleTile tile : voxelGroup.allTiles()) {
+        List<SourceBox> sourceBoxes = new ArrayList<>();
+        for (LittleTile tile : copy.allTiles()) {
             for (LittleBox box : tile) {
-                for (int x = box.minX; x < box.maxX; x++) {
-                    for (int y = box.minY; y < box.maxY; y++) {
-                        for (int z = box.minZ; z < box.maxZ; z++) {
-                            superMap.computeIfAbsent(tile, k -> new HashSet<>())
-                                    .add(new LittleVec(x, y, z));
-                        }
-                    }
-                }
+                sourceBoxes.add(new SourceBox(box, tile));
             }
         }
-        if (superMap.isEmpty()) return new LittleGroup();
-
-        int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
-        int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
-        for (Set<LittleVec> set : superMap.values()) {
-            for (LittleVec v : set) {
-                minX = Math.min(minX, v.x); maxX = Math.max(maxX, v.x);
-                minY = Math.min(minY, v.y); maxY = Math.max(maxY, v.y);
-                minZ = Math.min(minZ, v.z); maxZ = Math.max(maxZ, v.z);
-            }
-        }
-        float centerX = (minX + maxX) * 0.5f;
-        float centerY = (minY + maxY) * 0.5f;
-        float centerZ = (minZ + maxZ) * 0.5f;
+        if (sourceBoxes.isEmpty()) return new LittleGroup();
 
         Matrix4f rot = new Matrix4f().rotationXYZ(pitch, yaw, roll);
         Vector3f vec = new Vector3f();
-        Map<LittleTile, Set<LittleVec>> rotatedSuperMap = new HashMap<>();
+        float minX = Float.POSITIVE_INFINITY, maxX = Float.NEGATIVE_INFINITY;
+        float minY = Float.POSITIVE_INFINITY, maxY = Float.NEGATIVE_INFINITY;
+        float minZ = Float.POSITIVE_INFINITY, maxZ = Float.NEGATIVE_INFINITY;
 
-        for (Map.Entry<LittleTile, Set<LittleVec>> entry : superMap.entrySet()) {
-            LittleTile tile = entry.getKey();
-            for (LittleVec v : entry.getValue()) {
-                vec.set(v.x + 0.5f - centerX, v.y + 0.5f - centerY, v.z + 0.5f - centerZ);
+        for (SourceBox sb : sourceBoxes) {
+            LittleBox box = sb.box;
+            float[][] corners = {
+                    {box.minX, box.minY, box.minZ},
+                    {box.maxX, box.minY, box.minZ},
+                    {box.minX, box.maxY, box.minZ},
+                    {box.maxX, box.maxY, box.minZ},
+                    {box.minX, box.minY, box.maxZ},
+                    {box.maxX, box.minY, box.maxZ},
+                    {box.minX, box.maxY, box.maxZ},
+                    {box.maxX, box.maxY, box.maxZ}
+            };
+            for (float[] c : corners) {
+                vec.set(c[0], c[1], c[2]);
                 rot.transformPosition(vec);
-                vec.add(centerX, centerY, centerZ);
-                int nx = Math.round(vec.x());
-                int ny = Math.round(vec.y());
-                int nz = Math.round(vec.z());
-                rotatedSuperMap.computeIfAbsent(tile, k -> new HashSet<>())
-                        .add(new LittleVec(nx, ny, nz));
+                minX = Math.min(minX, vec.x()); maxX = Math.max(maxX, vec.x());
+                minY = Math.min(minY, vec.y()); maxY = Math.max(maxY, vec.y());
+                minZ = Math.min(minZ, vec.z()); maxZ = Math.max(maxZ, vec.z());
             }
         }
 
-        Map<LittleTile, Set<LittleVec>> downsampledMap = new HashMap<>();
-        for (Map.Entry<LittleTile, Set<LittleVec>> entry : rotatedSuperMap.entrySet()) {
-            LittleTile tile = entry.getKey();
-            for (LittleVec v : entry.getValue()) {
-                int ox = Math.floorDiv(v.x, superSample);
-                int oy = Math.floorDiv(v.y, superSample);
-                int oz = Math.floorDiv(v.z, superSample);
-                downsampledMap.computeIfAbsent(tile, k -> new HashSet<>())
-                        .add(new LittleVec(ox, oy, oz));
-            }
+        int startX = (int)Math.floor(minX) - 1;
+        int startY = (int)Math.floor(minY) - 1;
+        int startZ = (int)Math.floor(minZ) - 1;
+        int endX = (int)Math.ceil(maxX) + 1;
+        int endY = (int)Math.ceil(maxY) + 1;
+        int endZ = (int)Math.ceil(maxZ) + 1;
+
+        Matrix4f invRot = new Matrix4f(rot).invert();
+
+        int totalVoxels = (endX - startX) * (endY - startY) * (endZ - startZ);
+        if (totalVoxels <= 0) return new LittleGroup();
+
+        // 使用线程安全的映射：材质 -> 位置集合
+        Map<LittleTile, Set<LittleVec>> resultMap = new ConcurrentHashMap<>();
+
+        // 并行流或 ForkJoinPool
+        int threads = parallelism > 0 ? parallelism : Runtime.getRuntime().availableProcessors();
+        ForkJoinPool pool = new ForkJoinPool(threads);
+
+        try {
+            pool.submit(() -> {
+                IntStream.range(0, totalVoxels).parallel().forEach(index -> {
+                    int x = startX + index / ((endY - startY) * (endZ - startZ));
+                    int remainder = index % ((endY - startY) * (endZ - startZ));
+                    int y = startY + remainder / (endZ - startZ);
+                    int z = startZ + remainder % (endZ - startZ);
+
+                    float cx = x + 0.5f;
+                    float cy = y + 0.5f;
+                    float cz = z + 0.5f;
+
+                    vec.set(cx, cy, cz);
+                    invRot.transformPosition(vec);
+                    float sx = vec.x();
+                    float sy = vec.y();
+                    float sz = vec.z();
+
+                    for (SourceBox sb : sourceBoxes) {
+                        if (sb.contains(sx, sy, sz)) {
+                            resultMap.computeIfAbsent(sb.tile, k -> ConcurrentHashMap.newKeySet())
+                                    .add(new LittleVec(x, y, z));
+                            break;
+                        }
+                    }
+                });
+            }).join();
+        } finally {
+            pool.shutdown();
         }
 
         LittleGroup result = new LittleGroup();
-        for (Map.Entry<LittleTile, Set<LittleVec>> entry : downsampledMap.entrySet()) {
+        for (Map.Entry<LittleTile, Set<LittleVec>> entry : resultMap.entrySet()) {
             LittleTile template = entry.getKey();
-            List<LittleBox> boxes = new ArrayList<>(entry.getValue().size());
-            for (LittleVec v : entry.getValue()) {
+            Set<LittleVec> positions = entry.getValue();
+            if (positions.isEmpty()) continue;
+
+            List<LittleBox> boxes = new ArrayList<>(positions.size());
+            for (LittleVec v : positions) {
                 boxes.add(new LittleBox(v.x, v.y, v.z, v.x + 1, v.y + 1, v.z + 1));
             }
             LittleTile newTile = new LittleTile(template.getState(), template.color, boxes);
-            newTile.combine(originalGrid, true); // 合并相邻体素
-            result.addTile(originalGrid, newTile);
+            newTile.combine(grid, true);
+            result.addTile(grid, newTile);
         }
 
         result.convertToSmallest();
         translateToOrigin(result);
 
         return result;
+    }
+
+    private static class SourceBox {
+        final LittleBox box;
+        final LittleTile tile;
+        private final float minX, minY, minZ, maxX, maxY, maxZ;
+        private final float eps = 1e-6f; // 容差
+
+        SourceBox(LittleBox box, LittleTile tile) {
+            this.box = box;
+            this.tile = tile;
+            // 转成 float 以便快速包含检测
+            this.minX = box.minX - eps;
+            this.minY = box.minY - eps;
+            this.minZ = box.minZ - eps;
+            this.maxX = box.maxX + eps;
+            this.maxY = box.maxY + eps;
+            this.maxZ = box.maxZ + eps;
+        }
+
+        boolean contains(float x, float y, float z) {
+            return x >= minX && x <= maxX && y >= minY && y <= maxY && z >= minZ && z <= maxZ;
+        }
     }
 
     private static void translateToOrigin(LittleGroup group) {
