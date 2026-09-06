@@ -8,8 +8,6 @@ import java.util.stream.IntStream;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 
-import team.creative.creativecore.common.util.math.base.Facing;
-import team.creative.creativecore.common.util.math.geo.VectorFan;
 import team.creative.creativecore.common.util.math.vec.Vec3f;
 import team.creative.littletiles.LittleTiles;
 import team.creative.littletiles.common.block.little.tile.LittleTile;
@@ -53,46 +51,18 @@ public class LittleVoxelUtils {
         List<SourceBox> sourceBoxes = new ArrayList<>();
         int slopeCount = 0;
 
+        // ---------- 处理每个 tile ----------
         for (LittleTile tile : copy.allTiles()) {
             for (LittleBox box : tile) {
                 if (box instanceof LittleTransformableBox) {
                     slopeCount++;
                     LittleTransformableBox transformable = (LittleTransformableBox) box;
 
-                    float[][] triVerts = buildTrianglesFromCache(transformable.requestCache());
-                    if (triVerts.length == 0) {
-                        LittleTiles.LOGGER.warn("No triangles generated for transformable box, skipping");
-                        continue;
-                    }
-
-                    Vec3f[] corners = transformable.getTiltedCorners();
-                    float minX = Float.POSITIVE_INFINITY, maxX = Float.NEGATIVE_INFINITY;
-                    float minY = Float.POSITIVE_INFINITY, maxY = Float.NEGATIVE_INFINITY;
-                    float minZ = Float.POSITIVE_INFINITY, maxZ = Float.NEGATIVE_INFINITY;
-                    for (Vec3f c : corners) {
-                        minX = Math.min(minX, c.x); maxX = Math.max(maxX, c.x);
-                        minY = Math.min(minY, c.y); maxY = Math.max(maxY, c.y);
-                        minZ = Math.min(minZ, c.z); maxZ = Math.max(maxZ, c.z);
-                    }
-                    int startX = (int)Math.floor(minX);
-                    int startY = (int)Math.floor(minY);
-                    int startZ = (int)Math.floor(minZ);
-                    int endX = (int)Math.ceil(maxX);
-                    int endY = (int)Math.ceil(maxY);
-                    int endZ = (int)Math.ceil(maxZ);
-
-                    for (int x = startX; x < endX; x++) {
-                        for (int y = startY; y < endY; y++) {
-                            for (int z = startZ; z < endZ; z++) {
-                                float cx = x + 0.5f;
-                                float cy = y + 0.5f;
-                                float cz = z + 0.5f;
-                                if (isPointInPolyhedron(cx, cy, cz, triVerts)) {
-                                    LittleBox unitBox = new LittleBox(x, y, z, x + 1, y + 1, z + 1);
-                                    sourceBoxes.add(new SourceBox(unitBox, tile));
-                                }
-                            }
-                        }
+                    // 提取该斜面占据的所有单位体素
+                    List<LittleVec> voxels = extractVoxelsFromTransformable(transformable, grid);
+                    for (LittleVec v : voxels) {
+                        LittleBox unitBox = new LittleBox(v.x, v.y, v.z, v.x + 1, v.y + 1, v.z + 1);
+                        sourceBoxes.add(new SourceBox(unitBox, tile));
                     }
                 } else {
                     sourceBoxes.add(new SourceBox(box, tile));
@@ -107,10 +77,12 @@ public class LittleVoxelUtils {
         LittleTiles.LOGGER.info("Stage 2 - Extracted {} source boxes ({} slopes voxelized): {} ms",
                 sourceBoxes.size(), slopeCount, System.currentTimeMillis() - stageStart);
 
+        // ---------- BVH 构建 ----------
         stageStart = System.currentTimeMillis();
         BVHNode root = buildBVH(sourceBoxes);
         LittleTiles.LOGGER.info("Stage 3 - BVH construction: {} ms", System.currentTimeMillis() - stageStart);
 
+        // ---------- 旋转包围盒计算 ----------
         stageStart = System.currentTimeMillis();
         Matrix4f rot = new Matrix4f().rotationXYZ(pitch, yaw, roll);
         Vector3f vec = new Vector3f();
@@ -144,10 +116,12 @@ public class LittleVoxelUtils {
         int totalVoxels = (int)totalVoxelsLong;
         LittleTiles.LOGGER.info("Stage 4 - Bounding box computed, {} target voxels: {} ms", totalVoxels, System.currentTimeMillis() - stageStart);
 
+        // ---------- 逆矩阵 ----------
         stageStart = System.currentTimeMillis();
         Matrix4f invRot = new Matrix4f(rot).invert();
         LittleTiles.LOGGER.info("Stage 5 - Matrix inversion: {} ms", System.currentTimeMillis() - stageStart);
 
+        // ---------- 并行采样 ----------
         stageStart = System.currentTimeMillis();
         Map<LittleTile, Set<LittleVec>> resultMap = new ConcurrentHashMap<>();
         int threads = parallelism > 0 ? parallelism : Runtime.getRuntime().availableProcessors();
@@ -185,6 +159,7 @@ public class LittleVoxelUtils {
         int hitCount = resultMap.values().stream().mapToInt(Set::size).sum();
         LittleTiles.LOGGER.info("Stage 6 - Parallel sampling ({} threads): {} ms, {} voxels hit", threads, System.currentTimeMillis() - stageStart, hitCount);
 
+        // ---------- 合并 ----------
         stageStart = System.currentTimeMillis();
         LittleGroup result = new LittleGroup();
         int totalBoxesAfter = 0;
@@ -230,12 +205,47 @@ public class LittleVoxelUtils {
         LittleTiles.LOGGER.info("Stage 7 - Group construction (fast merge): {} tiles, {} boxes: {} ms",
                 result.totalTiles(), totalBoxesAfter, System.currentTimeMillis() - stageStart);
 
+        // ---------- 归零 ----------
         stageStart = System.currentTimeMillis();
         translateToOrigin(result);
         LittleTiles.LOGGER.info("Stage 8 - Grid normalization & translation: {} ms", System.currentTimeMillis() - stageStart);
 
         LittleTiles.LOGGER.info("Total rotation time: {} ms", System.currentTimeMillis() - startTotal);
         return result;
+    }
+
+    // ========== 从 LittleTransformableBox 提取体素（复制自 CurveBlueprintGenerator） ==========
+
+    private static List<LittleVec> extractVoxelsFromTransformable(LittleTransformableBox box, LittleGrid grid) {
+        List<LittleVec> voxels = new ArrayList<>();
+        // 直接使用 fillInSpace 填充体素
+        int w = box.maxX - box.minX;
+        int h = box.maxY - box.minY;
+        int d = box.maxZ - box.minZ;
+        if (w <= 0 || h <= 0 || d <= 0) return voxels;
+
+        boolean[][][] filled = new boolean[w][h][d];
+        box.fillInSpace(box, filled); // 对于 LittleTransformableBox，这填充其 AABB
+
+        // 但我们需要的是实际的倾斜体素，而不是 AABB。
+        // 为了正确处理，我们使用 extractBox 逐个单位体素检测。
+        // 但由于 extractBox 可能产生 null 或非单位 box，我们可以遍历整个 AABB，
+        // 对每个单位体素调用 extractBox，如果返回非 null 且是单位体素则添加。
+        for (int x = box.minX; x < box.maxX; x++) {
+            for (int y = box.minY; y < box.maxY; y++) {
+                for (int z = box.minZ; z < box.maxZ; z++) {
+                    LittleBox extracted = box.extractBox(x, y, z, null);
+                    if (extracted != null && extracted.isSolid() && extracted instanceof LittleBox) {
+                        // 确保返回的正好是单位体素
+                        if (extracted.minX == x && extracted.minY == y && extracted.minZ == z &&
+                                extracted.maxX == x+1 && extracted.maxY == y+1 && extracted.maxZ == z+1) {
+                            voxels.add(new LittleVec(x, y, z));
+                        }
+                    }
+                }
+            }
+        }
+        return voxels;
     }
 
     // ========== BVH Implementation ==========
@@ -350,7 +360,7 @@ public class LittleVoxelUtils {
         return queryBVH(node.right, x, y, z);
     }
 
-    // ========== SourceBox (plain boxes only) ==========
+    // ========== SourceBox ==========
 
     private static class SourceBox {
         final LittleTile tile;
@@ -377,79 +387,6 @@ public class LittleVoxelUtils {
                     y >= corners[0][1] && y <= corners[2][1] &&
                     z >= corners[0][2] && z <= corners[4][2];
         }
-    }
-
-    // ========== Slope voxelization helper (ray casting) ==========
-
-    private static float[][] buildTrianglesFromCache(LittleTransformableBox.VectorFanCache cache) {
-        List<float[]> triList = new ArrayList<>();
-        for (Facing facing : Facing.VALUES) {
-            LittleTransformableBox.VectorFanFaceCache faceCache = cache.get(facing);
-            if (faceCache == null) continue;
-            List<VectorFan> fans = new ArrayList<>();
-            if (faceCache.hasAxisStrip()) {
-                fans.addAll(faceCache.axisStrips);
-            }
-            if (faceCache.hasTiltedStrip()) {
-                if (faceCache.tiltedStrip1 != null) fans.add(faceCache.tiltedStrip1);
-                if (faceCache.tiltedStrip2 != null) fans.add(faceCache.tiltedStrip2);
-            }
-            for (VectorFan fan : fans) {
-                int n = fan.count();
-                if (n < 3) continue;
-                Vec3f v0 = fan.get(0);
-                for (int i = 1; i < n - 1; i++) {
-                    Vec3f v1 = fan.get(i);
-                    Vec3f v2 = fan.get(i + 1);
-                    float[] tri = new float[9];
-                    tri[0] = v0.x; tri[1] = v0.y; tri[2] = v0.z;
-                    tri[3] = v1.x; tri[4] = v1.y; tri[5] = v1.z;
-                    tri[6] = v2.x; tri[7] = v2.y; tri[8] = v2.z;
-                    triList.add(tri);
-                }
-            }
-        }
-        return triList.toArray(new float[0][]);
-    }
-
-    private static boolean isPointInPolyhedron(float px, float py, float pz, float[][] triVerts) {
-        int hitCount = 0;
-        float[] orig = {px, py, pz};
-        float[] dir = {1.0f, 0.0f, 0.0f};
-        for (float[] tri : triVerts) {
-            float[] v0 = {tri[0], tri[1], tri[2]};
-            float[] v1 = {tri[3], tri[4], tri[5]};
-            float[] v2 = {tri[6], tri[7], tri[8]};
-            if (rayTriangleIntersect(orig, dir, v0, v1, v2)) {
-                hitCount++;
-            }
-        }
-        return hitCount % 2 == 1;
-    }
-
-    private static boolean rayTriangleIntersect(float[] orig, float[] dir, float[] v0, float[] v1, float[] v2) {
-        float[] edge1 = {v1[0]-v0[0], v1[1]-v0[1], v1[2]-v0[2]};
-        float[] edge2 = {v2[0]-v0[0], v2[1]-v0[1], v2[2]-v0[2]};
-        float[] pvec = cross(dir, edge2);
-        float det = dot(edge1, pvec);
-        if (Math.abs(det) < 1e-8) return false;
-        float invDet = 1.0f / det;
-        float[] tvec = {orig[0]-v0[0], orig[1]-v0[1], orig[2]-v0[2]};
-        float u = dot(tvec, pvec) * invDet;
-        if (u < 0 || u > 1) return false;
-        float[] qvec = cross(tvec, edge1);
-        float v = dot(dir, qvec) * invDet;
-        if (v < 0 || u + v > 1) return false;
-        float t = dot(edge2, qvec) * invDet;
-        return t > 1e-8;
-    }
-
-    private static float[] cross(float[] a, float[] b) {
-        return new float[]{a[1]*b[2] - a[2]*b[1], a[2]*b[0] - a[0]*b[2], a[0]*b[1] - a[1]*b[0]};
-    }
-
-    private static float dot(float[] a, float[] b) {
-        return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
     }
 
     // ========== Helper ==========
