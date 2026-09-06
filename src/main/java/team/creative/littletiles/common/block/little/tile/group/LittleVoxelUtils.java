@@ -8,6 +8,8 @@ import java.util.stream.IntStream;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 
+import team.creative.creativecore.common.util.math.base.Facing;
+import team.creative.creativecore.common.util.math.geo.VectorFan;
 import team.creative.creativecore.common.util.math.vec.Vec3f;
 import team.creative.littletiles.LittleTiles;
 import team.creative.littletiles.common.block.little.tile.LittleTile;
@@ -58,12 +60,16 @@ public class LittleVoxelUtils {
                 if (box instanceof LittleTransformableBox) {
                     slopeCount++;
                     LittleTransformableBox transformable = (LittleTransformableBox) box;
-                    Vec3f[] corners = transformable.getTiltedCorners();
 
-                    // 构建三角形网格（使用正确的面索引）
-                    float[][] triVerts = buildTriangleVertices(corners);
+                    // 从缓存构建三角形网格
+                    float[][] triVerts = buildTrianglesFromCache(transformable.requestCache());
+                    if (triVerts.length == 0) {
+                        LittleTiles.LOGGER.warn("No triangles generated for transformable box, skipping");
+                        continue;
+                    }
 
                     // 计算包围盒
+                    Vec3f[] corners = transformable.getTiltedCorners();
                     float minX = Float.POSITIVE_INFINITY, maxX = Float.NEGATIVE_INFINITY;
                     float minY = Float.POSITIVE_INFINITY, maxY = Float.NEGATIVE_INFINITY;
                     float minZ = Float.POSITIVE_INFINITY, maxZ = Float.NEGATIVE_INFINITY;
@@ -385,6 +391,41 @@ public class LittleVoxelUtils {
     }
 
     // ========== 斜面体素化辅助（射线法） ==========
+
+    // ========== 从 VectorFanCache 构建三角形网格 ==========
+
+    private static float[][] buildTrianglesFromCache(LittleTransformableBox.VectorFanCache cache) {
+        List<float[]> triList = new ArrayList<>();
+        for (Facing facing : Facing.VALUES) {
+            LittleTransformableBox.VectorFanFaceCache faceCache = cache.get(facing);
+            if (faceCache == null) continue;
+            // 收集该面的所有多边形（axisStrips + tiltedStrips）
+            List<VectorFan> fans = new ArrayList<>();
+            if (faceCache.hasAxisStrip()) {
+                fans.addAll(faceCache.axisStrips);
+            }
+            if (faceCache.hasTiltedStrip()) {
+                if (faceCache.tiltedStrip1 != null) fans.add(faceCache.tiltedStrip1);
+                if (faceCache.tiltedStrip2 != null) fans.add(faceCache.tiltedStrip2);
+            }
+            // 对每个多边形进行扇形三角化
+            for (VectorFan fan : fans) {
+                int n = fan.count();
+                if (n < 3) continue;
+                Vec3f v0 = fan.get(0);
+                for (int i = 1; i < n - 1; i++) {
+                    Vec3f v1 = fan.get(i);
+                    Vec3f v2 = fan.get(i + 1);
+                    float[] tri = new float[9];
+                    tri[0] = v0.x; tri[1] = v0.y; tri[2] = v0.z;
+                    tri[3] = v1.x; tri[4] = v1.y; tri[5] = v1.z;
+                    tri[6] = v2.x; tri[7] = v2.y; tri[8] = v2.z;
+                    triList.add(tri);
+                }
+            }
+        }
+        return triList.toArray(new float[0][]);
+    }
 
     /**
      * 从8个角点构建三角形网格（6个面，每个面拆成2个三角形）
