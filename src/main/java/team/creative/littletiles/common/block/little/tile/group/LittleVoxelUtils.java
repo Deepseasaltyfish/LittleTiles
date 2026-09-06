@@ -3,12 +3,12 @@ package team.creative.littletiles.common.block.little.tile.group;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 
-import team.creative.creativecore.common.util.math.vec.Vec3f;
 import team.creative.littletiles.LittleTiles;
 import team.creative.littletiles.common.block.little.tile.LittleTile;
 import team.creative.littletiles.common.grid.LittleGrid;
@@ -19,7 +19,6 @@ import team.creative.littletiles.common.math.vec.LittleVecGrid;
 
 public class LittleVoxelUtils {
 
-    private static final float EPSILON = 1e-6f;
     private static final int BVH_LEAF_SIZE = 8;
 
     // ========== Public API ==========
@@ -51,6 +50,7 @@ public class LittleVoxelUtils {
         List<SourceBox> sourceBoxes = new ArrayList<>();
         int slopeCount = 0;
 
+        // Extract source boxes (plain boxes kept, slopes voxelized)
         for (LittleTile tile : copy.allTiles()) {
             for (LittleBox box : tile) {
                 if (box instanceof LittleTransformableBox) {
@@ -75,10 +75,12 @@ public class LittleVoxelUtils {
         LittleTiles.LOGGER.info("Stage 2 - Extracted {} source boxes ({} slopes voxelized): {} ms",
                 sourceBoxes.size(), slopeCount, System.currentTimeMillis() - stageStart);
 
+        // Build BVH
         stageStart = System.currentTimeMillis();
         BVHNode root = buildBVH(sourceBoxes);
         LittleTiles.LOGGER.info("Stage 3 - BVH construction: {} ms", System.currentTimeMillis() - stageStart);
 
+        // Compute rotated bounding box
         stageStart = System.currentTimeMillis();
         Matrix4f rot = new Matrix4f().rotationXYZ(pitch, yaw, roll);
         Vector3f vec = new Vector3f();
@@ -97,14 +99,14 @@ public class LittleVoxelUtils {
             }
         }
 
-        int startX = (int)Math.floor(minX) - 1;
-        int startY = (int)Math.floor(minY) - 1;
-        int startZ = (int)Math.floor(minZ) - 1;
-        int endX = (int)Math.ceil(maxX) + 1;
-        int endY = (int)Math.ceil(maxY) + 1;
-        int endZ = (int)Math.ceil(maxZ) + 1;
+        int boxMinX = (int)Math.floor(minX) - 1;
+        int boxMinY = (int)Math.floor(minY) - 1;
+        int boxMinZ = (int)Math.floor(minZ) - 1;
+        int boxMaxX = (int)Math.ceil(maxX) + 1;
+        int boxMaxY = (int)Math.ceil(maxY) + 1;
+        int boxMaxZ = (int)Math.ceil(maxZ) + 1;
 
-        long totalVoxelsLong = (long)(endX - startX) * (long)(endY - startY) * (long)(endZ - startZ);
+        long totalVoxelsLong = (long)(boxMaxX - boxMinX) * (long)(boxMaxY - boxMinY) * (long)(boxMaxZ - boxMinZ);
         if (totalVoxelsLong <= 0 || totalVoxelsLong > Integer.MAX_VALUE) {
             LittleTiles.LOGGER.info("Bounding box too large ({} voxels), returning empty group", totalVoxelsLong);
             return new LittleGroup();
@@ -112,10 +114,12 @@ public class LittleVoxelUtils {
         int totalVoxels = (int)totalVoxelsLong;
         LittleTiles.LOGGER.info("Stage 4 - Bounding box computed, {} target voxels: {} ms", totalVoxels, System.currentTimeMillis() - stageStart);
 
+        // Invert rotation matrix
         stageStart = System.currentTimeMillis();
         Matrix4f invRot = new Matrix4f(rot).invert();
         LittleTiles.LOGGER.info("Stage 5 - Matrix inversion: {} ms", System.currentTimeMillis() - stageStart);
 
+        // Parallel sampling
         stageStart = System.currentTimeMillis();
         Map<LittleTile, Set<LittleVec>> resultMap = new ConcurrentHashMap<>();
         int threads = parallelism > 0 ? parallelism : Runtime.getRuntime().availableProcessors();
@@ -125,10 +129,10 @@ public class LittleVoxelUtils {
             pool.submit(() -> {
                 IntStream.range(0, totalVoxels).parallel().forEach(index -> {
                     Vector3f localVec = new Vector3f();
-                    int x = startX + index / ((endY - startY) * (endZ - startZ));
-                    int remainder = index % ((endY - startY) * (endZ - startZ));
-                    int y = startY + remainder / (endZ - startZ);
-                    int z = startZ + remainder % (endZ - startZ);
+                    int x = boxMinX + index / ((boxMaxY - boxMinY) * (boxMaxZ - boxMinZ));
+                    int remainder = index % ((boxMaxY - boxMinY) * (boxMaxZ - boxMinZ));
+                    int y = boxMinY + remainder / (boxMaxZ - boxMinZ);
+                    int z = boxMinZ + remainder % (boxMaxZ - boxMinZ);
 
                     float cx = x + 0.5f;
                     float cy = y + 0.5f;
@@ -153,51 +157,97 @@ public class LittleVoxelUtils {
         int hitCount = resultMap.values().stream().mapToInt(Set::size).sum();
         LittleTiles.LOGGER.info("Stage 6 - Parallel sampling ({} threads): {} ms, {} voxels hit", threads, System.currentTimeMillis() - stageStart, hitCount);
 
+        // 7. Build result group with column merge + horizontal merge (safe)
         stageStart = System.currentTimeMillis();
-        LittleGroup result = new LittleGroup();
-        int totalBoxesAfter = 0;
 
-        for (Map.Entry<LittleTile, Set<LittleVec>> entry : resultMap.entrySet()) {
+        LittleGroup result = new LittleGroup();
+        AtomicInteger totalBoxesAfter = new AtomicInteger(0);
+
+        resultMap.entrySet().parallelStream().forEach(entry -> {
             LittleTile template = entry.getKey();
             Set<LittleVec> positions = entry.getValue();
-            if (positions.isEmpty()) continue;
+            if (positions.isEmpty()) return;
 
-            List<LittleVec> sorted = new ArrayList<>(positions);
-            sorted.sort((a, b) -> {
-                if (a.y != b.y) return Integer.compare(a.y, b.y);
-                if (a.z != b.z) return Integer.compare(a.z, b.z);
-                return Integer.compare(a.x, b.x);
-            });
-
-            List<LittleBox> boxes = new ArrayList<>();
-            int i = 0;
-            while (i < sorted.size()) {
-                LittleVec first = sorted.get(i);
-                int runStartX = first.x;
-                int y = first.y;
-                int z = first.z;
-                int runEndX = runStartX + 1;
-                i++;
-                while (i < sorted.size()) {
-                    LittleVec next = sorted.get(i);
-                    if (next.y == y && next.z == z && next.x == runEndX) {
-                        runEndX++;
-                        i++;
+            // 1. Column merge: group by (x,z), merge Y ranges
+            Map<Long, List<int[]>> columnRanges = new HashMap<>();
+            Map<Long, List<Integer>> columnYMap = new HashMap<>();
+            for (LittleVec v : positions) {
+                long key = ((long) v.x << 32) | (v.z & 0xffffffffL);
+                columnYMap.computeIfAbsent(key, k -> new ArrayList<>()).add(v.y);
+            }
+            for (Map.Entry<Long, List<Integer>> colEntry : columnYMap.entrySet()) {
+                long key = colEntry.getKey();
+                List<Integer> yList = colEntry.getValue();
+                Collections.sort(yList);
+                List<int[]> ranges = new ArrayList<>();
+                int startY = yList.get(0);
+                int endY = startY + 1;
+                for (int i = 1; i < yList.size(); i++) {
+                    int y = yList.get(i);
+                    if (y == endY) {
+                        endY++;
                     } else {
-                        break;
+                        ranges.add(new int[]{startY, endY});
+                        startY = y;
+                        endY = y + 1;
                     }
                 }
-                boxes.add(new LittleBox(runStartX, y, z, runEndX, y + 1, z + 1));
+                ranges.add(new int[]{startY, endY});
+                columnRanges.put(key, ranges);
             }
 
+            // 2. Group by x, then by z (use TreeMap to get sorted z)
+            Map<Integer, TreeMap<Integer, List<int[]>>> rows = new HashMap<>();
+            for (Map.Entry<Long, List<int[]>> colEntry : columnRanges.entrySet()) {
+                long key = colEntry.getKey();
+                int x = (int)(key >> 32);
+                int z = (int)(key & 0xffffffffL);
+                rows.computeIfAbsent(x, k -> new TreeMap<>()).put(z, colEntry.getValue());
+            }
+
+            // 3. Horizontal merge (only if columns are consecutive and ranges identical)
+            List<LittleBox> boxes = new ArrayList<>();
+            for (Map.Entry<Integer, TreeMap<Integer, List<int[]>>> rowEntry : rows.entrySet()) {
+                int x = rowEntry.getKey();
+                TreeMap<Integer, List<int[]>> zMap = rowEntry.getValue();
+                List<Integer> zList = new ArrayList<>(zMap.keySet());
+
+                int i = 0;
+                while (i < zList.size()) {
+                    int zStart = zList.get(i);
+                    List<int[]> currentRanges = zMap.get(zStart);
+                    int zEnd = zStart + 1;
+                    i++;
+                    // Try to merge with following consecutive columns
+                    while (i < zList.size()) {
+                        int nextZ = zList.get(i);
+                        // Check if consecutive and ranges identical
+                        if (nextZ == zEnd && rangesEqual(currentRanges, zMap.get(nextZ))) {
+                            zEnd = nextZ + 1;
+                            i++;
+                        } else {
+                            break;
+                        }
+                    }
+                    // Create box for merged columns (one per Y range)
+                    for (int[] range : currentRanges) {
+                        boxes.add(new LittleBox(x, range[0], zStart, x + 1, range[1], zEnd));
+                    }
+                }
+            }
+
+            // Add tile
             LittleTile newTile = new LittleTile(template.getState(), template.color, boxes);
-            result.addTileFast(grid, newTile);
-            totalBoxesAfter += boxes.size();
-        }
+            synchronized (result) {
+                result.addTileFast(grid, newTile);
+                totalBoxesAfter.addAndGet(boxes.size());
+            }
+        });
 
-        LittleTiles.LOGGER.info("Stage 7 - Group construction (fast merge): {} tiles, {} boxes: {} ms",
-                result.totalTiles(), totalBoxesAfter, System.currentTimeMillis() - stageStart);
+        LittleTiles.LOGGER.info("Stage 7 - Column merge + horizontal merge (safe): {} tiles, {} boxes: {} ms",
+                result.totalTiles(), totalBoxesAfter.get(), System.currentTimeMillis() - stageStart);
 
+        // Finalize
         stageStart = System.currentTimeMillis();
         translateToOrigin(result);
         LittleTiles.LOGGER.info("Stage 8 - Grid normalization & translation: {} ms", System.currentTimeMillis() - stageStart);
@@ -206,7 +256,15 @@ public class LittleVoxelUtils {
         return result;
     }
 
-    // ========== 提取斜面体素（使用 intersectsWith 精确检测） ==========
+    private static boolean rangesEqual(List<int[]> a, List<int[]> b) {
+        if (a.size() != b.size()) return false;
+        for (int i = 0; i < a.size(); i++) {
+            if (a.get(i)[0] != b.get(i)[0] || a.get(i)[1] != b.get(i)[1]) return false;
+        }
+        return true;
+    }
+
+    // ========== Extract voxels from transformable box (using intersectsWith) ==========
 
     private static List<LittleVec> extractVoxelsFromTransformable(LittleTransformableBox box, LittleGrid grid) {
         List<LittleVec> voxels = new ArrayList<>();
@@ -214,7 +272,6 @@ public class LittleVoxelUtils {
             for (int y = box.minY; y < box.maxY; y++) {
                 for (int z = box.minZ; z < box.maxZ; z++) {
                     LittleBox unit = new LittleBox(x, y, z, x + 1, y + 1, z + 1);
-                    // 使用静态方法进行相交检测
                     if (LittleBox.intersectsWith(box, unit)) {
                         voxels.add(new LittleVec(x, y, z));
                     }
@@ -336,7 +393,7 @@ public class LittleVoxelUtils {
         return queryBVH(node.right, x, y, z);
     }
 
-    // ========== SourceBox ==========
+    // ========== SourceBox (plain boxes only) ==========
 
     private static class SourceBox {
         final LittleTile tile;
