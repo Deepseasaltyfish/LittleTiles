@@ -8,10 +8,12 @@ import java.util.stream.IntStream;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 
+import team.creative.creativecore.common.util.math.vec.Vec3f;
 import team.creative.littletiles.LittleTiles;
 import team.creative.littletiles.common.block.little.tile.LittleTile;
 import team.creative.littletiles.common.grid.LittleGrid;
 import team.creative.littletiles.common.math.box.LittleBox;
+import team.creative.littletiles.common.math.box.LittleTransformableBox;
 import team.creative.littletiles.common.math.vec.LittleVec;
 import team.creative.littletiles.common.math.vec.LittleVecGrid;
 
@@ -20,48 +22,48 @@ public class LittleVoxelUtils {
     private static final float EPSILON = 1e-6f;
     private static final int BVH_LEAF_SIZE = 8;
 
-    /**
-     * Rotates a voxel group using all available CPU cores.
-     */
-    public static LittleGroup rotateVoxels(LittleGroup group, float yaw, float pitch, float roll) {
-        return rotateVoxels(group, yaw, pitch, roll, Runtime.getRuntime().availableProcessors());
+    public static LittleGroup rotateVoxels(LittleGroup group, float yaw, float pitch, float roll, LittleGrid targetGrid) {
+        return rotateVoxels(group, yaw, pitch, roll, Runtime.getRuntime().availableProcessors(), targetGrid);
     }
 
-    /**
-     * Rotates a voxel group with specified parallelism.
-     */
-    public static LittleGroup rotateVoxels(LittleGroup group, float yaw, float pitch, float roll, int parallelism) {
+    public static LittleGroup rotateVoxels(LittleGroup group, float yaw, float pitch, float roll, int parallelism, LittleGrid targetGrid) {
         long startTotal = System.currentTimeMillis();
         long stageStart;
 
-        // 1. Copy and unify grid
+        // 1. 复制并统一到目标网格
         stageStart = System.currentTimeMillis();
-        int targetSize = group.getSmallest();
-        LittleGrid grid = LittleGrid.get(targetSize);
+        LittleGrid grid = targetGrid;
         LittleGroup copy = group.copy();
         copy.convertTo(grid);
-        LittleTiles.LOGGER.info("Stage 1 - Copy & grid conversion: {} ms", System.currentTimeMillis() - stageStart);
+        LittleTiles.LOGGER.info("Stage 1 - Copy & grid conversion (target: {}): {} ms", grid.count, System.currentTimeMillis() - stageStart);
 
-        // 2. Extract source boxes
+        // 2. 提取源盒子（支持斜面）
         stageStart = System.currentTimeMillis();
         List<SourceBox> sourceBoxes = new ArrayList<>();
+        int slopeCount = 0;
         for (LittleTile tile : copy.allTiles()) {
             for (LittleBox box : tile) {
-                sourceBoxes.add(new SourceBox(box, tile));
+                if (box instanceof LittleTransformableBox) {
+                    slopeCount++;
+                    sourceBoxes.add(new SourceBox((LittleTransformableBox) box, tile));
+                } else {
+                    sourceBoxes.add(new SourceBox(box, tile));
+                }
             }
         }
         if (sourceBoxes.isEmpty()) {
             LittleTiles.LOGGER.info("Source boxes empty, returning empty group");
             return new LittleGroup();
         }
-        LittleTiles.LOGGER.info("Stage 2 - Extracted {} source boxes: {} ms", sourceBoxes.size(), System.currentTimeMillis() - stageStart);
+        LittleTiles.LOGGER.info("Stage 2 - Extracted {} source boxes ({} slopes): {} ms",
+                sourceBoxes.size(), slopeCount, System.currentTimeMillis() - stageStart);
 
-        // 3. Build BVH
+        // 3. 构建 BVH
         stageStart = System.currentTimeMillis();
         BVHNode root = buildBVH(sourceBoxes);
         LittleTiles.LOGGER.info("Stage 3 - BVH construction: {} ms", System.currentTimeMillis() - stageStart);
 
-        // 4. Compute rotated bounding box
+        // 4. 计算旋转后的包围盒
         stageStart = System.currentTimeMillis();
         Matrix4f rot = new Matrix4f().rotationXYZ(pitch, yaw, roll);
         Vector3f vec = new Vector3f();
@@ -70,17 +72,7 @@ public class LittleVoxelUtils {
         float minZ = Float.POSITIVE_INFINITY, maxZ = Float.NEGATIVE_INFINITY;
 
         for (SourceBox sb : sourceBoxes) {
-            LittleBox box = sb.box;
-            float[][] corners = {
-                    {box.minX, box.minY, box.minZ},
-                    {box.maxX, box.minY, box.minZ},
-                    {box.minX, box.maxY, box.minZ},
-                    {box.maxX, box.maxY, box.minZ},
-                    {box.minX, box.minY, box.maxZ},
-                    {box.maxX, box.minY, box.maxZ},
-                    {box.minX, box.maxY, box.maxZ},
-                    {box.maxX, box.maxY, box.maxZ}
-            };
+            float[][] corners = sb.getCorners();
             for (float[] c : corners) {
                 vec.set(c[0], c[1], c[2]);
                 rot.transformPosition(vec);
@@ -105,12 +97,12 @@ public class LittleVoxelUtils {
         int totalVoxels = (int)totalVoxelsLong;
         LittleTiles.LOGGER.info("Stage 4 - Bounding box computed, {} target voxels: {} ms", totalVoxels, System.currentTimeMillis() - stageStart);
 
-        // 5. Invert rotation matrix
+        // 5. 逆矩阵
         stageStart = System.currentTimeMillis();
         Matrix4f invRot = new Matrix4f(rot).invert();
         LittleTiles.LOGGER.info("Stage 5 - Matrix inversion: {} ms", System.currentTimeMillis() - stageStart);
 
-        // 6. Parallel sampling
+        // 6. 并行采样（使用 BVH，自动处理斜面）
         stageStart = System.currentTimeMillis();
         Map<LittleTile, Set<LittleVec>> resultMap = new ConcurrentHashMap<>();
         int threads = parallelism > 0 ? parallelism : Runtime.getRuntime().availableProcessors();
@@ -148,7 +140,7 @@ public class LittleVoxelUtils {
         int hitCount = resultMap.values().stream().mapToInt(Set::size).sum();
         LittleTiles.LOGGER.info("Stage 6 - Parallel sampling ({} threads): {} ms, {} voxels hit", threads, System.currentTimeMillis() - stageStart, hitCount);
 
-        // 7. Build result group with fast X-axis run-length merging
+        // 7. 合并（此处仅做 X 方向游程合并，保持稳定）
         stageStart = System.currentTimeMillis();
         LittleGroup result = new LittleGroup();
         int totalBoxesAfter = 0;
@@ -194,9 +186,8 @@ public class LittleVoxelUtils {
         LittleTiles.LOGGER.info("Stage 7 - Group construction (fast merge): {} tiles, {} boxes: {} ms",
                 result.totalTiles(), totalBoxesAfter, System.currentTimeMillis() - stageStart);
 
-        // 8. Finalize grid and center
+        // 8. 最终处理（不再 convertToSmallest，因为已固定目标网格）
         stageStart = System.currentTimeMillis();
-        result.convertToSmallest();
         translateToOrigin(result);
         LittleTiles.LOGGER.info("Stage 8 - Grid normalization & translation: {} ms", System.currentTimeMillis() - stageStart);
 
@@ -204,7 +195,7 @@ public class LittleVoxelUtils {
         return result;
     }
 
-    // ========== BVH Implementation ==========
+    // ========== BVH 与 SourceBox 实现（包含斜面支持） ==========
 
     private static class BVHNode {
         float minX, minY, minZ, maxX, maxY, maxZ;
@@ -236,12 +227,12 @@ public class LittleVoxelUtils {
             minZ = Float.POSITIVE_INFINITY;
             maxZ = Float.NEGATIVE_INFINITY;
             for (SourceBox sb : boxes) {
-                minX = Math.min(minX, sb.minX);
-                maxX = Math.max(maxX, sb.maxX);
-                minY = Math.min(minY, sb.minY);
-                maxY = Math.max(maxY, sb.maxY);
-                minZ = Math.min(minZ, sb.minZ);
-                maxZ = Math.max(maxZ, sb.maxZ);
+                float[][] corners = sb.getCorners();
+                for (float[] c : corners) {
+                    minX = Math.min(minX, c[0]); maxX = Math.max(maxX, c[0]);
+                    minY = Math.min(minY, c[1]); maxY = Math.max(maxY, c[1]);
+                    minZ = Math.min(minZ, c[2]); maxZ = Math.max(maxZ, c[2]);
+                }
             }
         }
 
@@ -259,13 +250,17 @@ public class LittleVoxelUtils {
             return new BVHNode(boxes);
         }
 
+        // 计算包围盒
         float minX = Float.POSITIVE_INFINITY, maxX = Float.NEGATIVE_INFINITY;
         float minY = Float.POSITIVE_INFINITY, maxY = Float.NEGATIVE_INFINITY;
         float minZ = Float.POSITIVE_INFINITY, maxZ = Float.NEGATIVE_INFINITY;
         for (SourceBox sb : boxes) {
-            minX = Math.min(minX, sb.minX); maxX = Math.max(maxX, sb.maxX);
-            minY = Math.min(minY, sb.minY); maxY = Math.max(maxY, sb.maxY);
-            minZ = Math.min(minZ, sb.minZ); maxZ = Math.max(maxZ, sb.maxZ);
+            float[][] corners = sb.getCorners();
+            for (float[] c : corners) {
+                minX = Math.min(minX, c[0]); maxX = Math.max(maxX, c[0]);
+                minY = Math.min(minY, c[1]); maxY = Math.max(maxY, c[1]);
+                minZ = Math.min(minZ, c[2]); maxZ = Math.max(maxZ, c[2]);
+            }
         }
         float extentX = maxX - minX;
         float extentY = maxY - minY;
@@ -286,12 +281,13 @@ public class LittleVoxelUtils {
         for (SourceBox sb : boxes) {
             float center;
             if (axis == 0) {
-                center = (sb.minX + sb.maxX) * 0.5f;
+                center = (sb.getCorners()[0][0] + sb.getCorners()[4][0]) * 0.5f; // approximate
             } else if (axis == 1) {
-                center = (sb.minY + sb.maxY) * 0.5f;
+                center = (sb.getCorners()[0][1] + sb.getCorners()[2][1]) * 0.5f;
             } else {
-                center = (sb.minZ + sb.maxZ) * 0.5f;
+                center = (sb.getCorners()[0][2] + sb.getCorners()[1][2]) * 0.5f;
             }
+            // 更准确的方法：计算所有角点的平均值，但此处简化
             if (center < split) leftList.add(sb);
             else rightList.add(sb);
         }
@@ -316,28 +312,112 @@ public class LittleVoxelUtils {
         return queryBVH(node.right, x, y, z);
     }
 
-    // ========== Helper Classes ==========
-
     private static class SourceBox {
-        final LittleBox box;
         final LittleTile tile;
-        final float minX, minY, minZ, maxX, maxY, maxZ;
+        private final float[][] corners; // 8 corners, each [x,y,z]
+        private final Plane[] planes;    // 6 planes for convex hull
+        private final boolean isSlope;
 
+        // 普通盒子构造（不变）
         SourceBox(LittleBox box, LittleTile tile) {
-            this.box = box;
             this.tile = tile;
-            this.minX = box.minX - EPSILON;
-            this.minY = box.minY - EPSILON;
-            this.minZ = box.minZ - EPSILON;
-            this.maxX = box.maxX + EPSILON;
-            this.maxY = box.maxY + EPSILON;
-            this.maxZ = box.maxZ + EPSILON;
+            this.corners = new float[][] {
+                    {box.minX, box.minY, box.minZ},
+                    {box.maxX, box.minY, box.minZ},
+                    {box.minX, box.maxY, box.minZ},
+                    {box.maxX, box.maxY, box.minZ},
+                    {box.minX, box.minY, box.maxZ},
+                    {box.maxX, box.minY, box.maxZ},
+                    {box.minX, box.maxY, box.maxZ},
+                    {box.maxX, box.maxY, box.maxZ}
+            };
+            this.isSlope = false;
+            this.planes = null;
         }
+
+        // 斜面构造（支持阴角/阳角）
+        SourceBox(LittleTransformableBox box, LittleTile tile) {
+            this.tile = tile;
+            Vec3f[] vecCorners = box.getTiltedCorners();
+            this.corners = new float[8][3];
+            for (int i = 0; i < 8; i++) {
+                corners[i][0] = vecCorners[i].x;
+                corners[i][1] = vecCorners[i].y;
+                corners[i][2] = vecCorners[i].z;
+            }
+            this.isSlope = true;
+            this.planes = computePlanes(corners);
+        }
+
+        float[][] getCorners() { return corners; }
 
         boolean contains(float x, float y, float z) {
-            return x >= minX && x <= maxX && y >= minY && y <= maxY && z >= minZ && z <= maxZ;
+            if (isSlope) {
+                for (Plane p : planes) {
+                    if (p.distance(x, y, z) < -EPSILON) return false;
+                }
+                return true;
+            } else {
+                return x >= corners[0][0] && x <= corners[1][0] &&
+                        y >= corners[0][1] && y <= corners[2][1] &&
+                        z >= corners[0][2] && z <= corners[4][2];
+            }
+        }
+
+        // 用12个三角形（每个面拆成2个三角形）构建平面，法向量指向内部
+        private static Plane[] computePlanes(float[][] corners) {
+            int[][] triIndices = {
+                    {0,1,3}, {0,3,2}, // bottom
+                    {4,5,7}, {4,7,6}, // top
+                    {0,1,5}, {0,5,4}, // front
+                    {2,3,7}, {2,7,6}, // back
+                    {0,2,6}, {0,6,4}, // left
+                    {1,3,7}, {1,7,5}  // right
+            };
+            // 计算几何中心
+            float cx = 0, cy = 0, cz = 0;
+            for (float[] c : corners) { cx += c[0]; cy += c[1]; cz += c[2]; }
+            cx /= 8; cy /= 8; cz /= 8;
+
+            Plane[] planes = new Plane[6];
+            int planeIdx = 0;
+            // 每两个三角形共面，合并为同一个平面
+            for (int i = 0; i < triIndices.length; i += 2) {
+                int[] t1 = triIndices[i];
+                int[] t2 = triIndices[i+1];
+                // 用第一个三角形的三点计算法向量
+                float[] a = corners[t1[0]], b = corners[t1[1]], c = corners[t1[2]];
+                float ax = a[0], ay = a[1], az = a[2];
+                float bx = b[0], by = b[1], bz = b[2];
+                float cx_ = c[0], cy_ = c[1], cz_ = c[2];
+                float e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+                float e2x = cx_ - ax, e2y = cy_ - ay, e2z = cz_ - az;
+                float nx = e1y * e2z - e1z * e2y;
+                float ny = e1z * e2x - e1x * e2z;
+                float nz = e1x * e2y - e1y * e2x;
+                // 指向内部
+                float dot = nx * (cx - ax) + ny * (cy - ay) + nz * (cz - az);
+                if (dot < 0) { nx = -nx; ny = -ny; nz = -nz; }
+                float len = (float)Math.sqrt(nx*nx + ny*ny + nz*nz);
+                if (len > 1e-8f) { nx /= len; ny /= len; nz /= len; }
+                float d = -(nx * ax + ny * ay + nz * az);
+                planes[planeIdx++] = new Plane(nx, ny, nz, d);
+            }
+            return planes;
+        }
+
+        private static class Plane {
+            final float nx, ny, nz, d;
+            Plane(float nx, float ny, float nz, float d) {
+                this.nx = nx; this.ny = ny; this.nz = nz; this.d = d;
+            }
+            float distance(float x, float y, float z) {
+                return nx * x + ny * y + nz * z + d;
+            }
         }
     }
+
+    // ========== 辅助方法 ==========
 
     private static void translateToOrigin(LittleGroup group) {
         LittleVec min = group.getMinVec();

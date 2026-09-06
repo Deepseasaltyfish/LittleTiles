@@ -42,9 +42,11 @@ import team.creative.creativecore.common.util.type.itr.FunctionIterator;
 import team.creative.littletiles.LittleTilesGuiRegistry;
 import team.creative.littletiles.LittleTilesRegistry;
 import team.creative.littletiles.api.common.tool.ILittleTool;
+import team.creative.littletiles.client.LittleTilesClient;
 import team.creative.littletiles.common.block.little.tile.group.LittleGroup;
 import team.creative.littletiles.common.block.little.tile.group.LittleVoxelUtils;
 import team.creative.littletiles.common.grid.LittleGrid;
+import team.creative.littletiles.common.gui.control.GuiGridConfig;
 import team.creative.littletiles.common.gui.control.animation.GuiAnimationPanel;
 import team.creative.littletiles.common.gui.tool.GuiConfigure;
 import team.creative.littletiles.common.gui.tool.blueprint.test.BlueprintTest;
@@ -52,6 +54,7 @@ import team.creative.littletiles.common.gui.tool.blueprint.test.BlueprintTestErr
 import team.creative.littletiles.common.gui.tool.blueprint.test.BlueprintTestResults;
 import team.creative.littletiles.common.gui.tool.blueprint.test.GuiBlueprintTest;
 import team.creative.littletiles.common.item.ItemLittleBlueprint;
+import team.creative.littletiles.common.placement.setting.PlacementPlayerSetting;
 import team.creative.littletiles.common.structure.registry.gui.LittleStructureGui;
 import team.creative.littletiles.common.structure.registry.gui.LittleStructureGuiControl;
 import team.creative.littletiles.common.structure.registry.gui.LittleStructureGuiRegistry;
@@ -276,8 +279,7 @@ public class GuiBlueprint extends GuiConfigure {
         add(bottom.setVAlign(VAlign.CENTER).setExpandableX());
 
 
-
-        //test
+        // test - Rotation panel with grid precision selector
         GuiParent rotateContainer = new GuiParent(GuiFlow.FIT_X);
         rotateContainer.setVAlign(VAlign.CENTER);
         rotateContainer.add(new GuiLabel("rotLabel").setTranslate("rotate"));
@@ -294,6 +296,10 @@ public class GuiBlueprint extends GuiConfigure {
         rollField.setTooltip("roll");
         rotateContainer.add(rollField);
 
+        // Grid precision selector (using GuiGridConfig)
+        GuiGridConfig gridConfig = new GuiGridConfig("grid", getPlayer(), PlacementPlayerSetting.grid(getPlayer()), LittleTilesClient::grid);
+        rotateContainer.add(gridConfig);
+
         GuiButton applyRotate = (GuiButton) new GuiButton("applyRotate", x -> {
             try {
                 float yawDeg = Float.parseFloat(yawField.getText());
@@ -304,12 +310,17 @@ public class GuiBlueprint extends GuiConfigure {
                 float pitch = (float) Math.toRadians(pitchDeg);
                 float roll = (float) Math.toRadians(rollDeg);
 
+                // Get selected target grid
+                LittleGrid targetGrid = gridConfig.get();
+                if (targetGrid == null) targetGrid = LittleGrid.MIN; // fallback
+
                 LittleGroup groupTemp = LittleGroup.load(ItemLittleBlueprint.getContent(tool.get()));
                 if (groupTemp.isEmptyIncludeChildren()) {
                     return;
                 }
 
-                LittleGroup rotated = LittleVoxelUtils.rotateVoxels(groupTemp, yaw, pitch, roll);
+                // Call rotation with target grid
+                LittleGroup rotated = LittleVoxelUtils.rotateVoxels(groupTemp, yaw, pitch, roll, targetGrid);
 
                 CompoundTag stackTag = ILittleTool.getData(tool.get());
                 stackTag.put(ItemLittleBlueprint.CONTENT_KEY, LittleGroup.save(rotated));
@@ -326,7 +337,7 @@ public class GuiBlueprint extends GuiConfigure {
 
         rotateContainer.add(applyRotate);
         bottom.addRight(rotateContainer);
-        //
+        // end test
 
 
 
