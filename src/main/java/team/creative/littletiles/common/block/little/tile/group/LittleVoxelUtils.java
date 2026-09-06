@@ -43,14 +43,12 @@ public class LittleVoxelUtils {
         long startTotal = System.currentTimeMillis();
         long stageStart;
 
-        // 1. 复制并统一到目标网格
         stageStart = System.currentTimeMillis();
         LittleGrid grid = targetGrid;
         LittleGroup copy = group.copy();
         copy.convertTo(grid);
         LittleTiles.LOGGER.info("Stage 1 - Copy & grid conversion (target: {}): {} ms", grid.count, System.currentTimeMillis() - stageStart);
 
-        // 2. 提取源盒子（普通盒子保留，斜面体素化）
         stageStart = System.currentTimeMillis();
         List<SourceBox> sourceBoxes = new ArrayList<>();
         int slopeCount = 0;
@@ -61,14 +59,12 @@ public class LittleVoxelUtils {
                     slopeCount++;
                     LittleTransformableBox transformable = (LittleTransformableBox) box;
 
-                    // 从缓存构建三角形网格
                     float[][] triVerts = buildTrianglesFromCache(transformable.requestCache());
                     if (triVerts.length == 0) {
                         LittleTiles.LOGGER.warn("No triangles generated for transformable box, skipping");
                         continue;
                     }
 
-                    // 计算包围盒
                     Vec3f[] corners = transformable.getTiltedCorners();
                     float minX = Float.POSITIVE_INFINITY, maxX = Float.NEGATIVE_INFINITY;
                     float minY = Float.POSITIVE_INFINITY, maxY = Float.NEGATIVE_INFINITY;
@@ -85,7 +81,6 @@ public class LittleVoxelUtils {
                     int endY = (int)Math.ceil(maxY);
                     int endZ = (int)Math.ceil(maxZ);
 
-                    // 遍历包围盒内所有单位体素，用射线法检测中心点
                     for (int x = startX; x < endX; x++) {
                         for (int y = startY; y < endY; y++) {
                             for (int z = startZ; z < endZ; z++) {
@@ -112,12 +107,10 @@ public class LittleVoxelUtils {
         LittleTiles.LOGGER.info("Stage 2 - Extracted {} source boxes ({} slopes voxelized): {} ms",
                 sourceBoxes.size(), slopeCount, System.currentTimeMillis() - stageStart);
 
-        // 3. 构建 BVH
         stageStart = System.currentTimeMillis();
         BVHNode root = buildBVH(sourceBoxes);
         LittleTiles.LOGGER.info("Stage 3 - BVH construction: {} ms", System.currentTimeMillis() - stageStart);
 
-        // 4. 计算旋转后的包围盒
         stageStart = System.currentTimeMillis();
         Matrix4f rot = new Matrix4f().rotationXYZ(pitch, yaw, roll);
         Vector3f vec = new Vector3f();
@@ -151,12 +144,10 @@ public class LittleVoxelUtils {
         int totalVoxels = (int)totalVoxelsLong;
         LittleTiles.LOGGER.info("Stage 4 - Bounding box computed, {} target voxels: {} ms", totalVoxels, System.currentTimeMillis() - stageStart);
 
-        // 5. 逆矩阵
         stageStart = System.currentTimeMillis();
         Matrix4f invRot = new Matrix4f(rot).invert();
         LittleTiles.LOGGER.info("Stage 5 - Matrix inversion: {} ms", System.currentTimeMillis() - stageStart);
 
-        // 6. 并行采样
         stageStart = System.currentTimeMillis();
         Map<LittleTile, Set<LittleVec>> resultMap = new ConcurrentHashMap<>();
         int threads = parallelism > 0 ? parallelism : Runtime.getRuntime().availableProcessors();
@@ -194,7 +185,6 @@ public class LittleVoxelUtils {
         int hitCount = resultMap.values().stream().mapToInt(Set::size).sum();
         LittleTiles.LOGGER.info("Stage 6 - Parallel sampling ({} threads): {} ms, {} voxels hit", threads, System.currentTimeMillis() - stageStart, hitCount);
 
-        // 7. 合并（X方向游程合并）
         stageStart = System.currentTimeMillis();
         LittleGroup result = new LittleGroup();
         int totalBoxesAfter = 0;
@@ -240,7 +230,6 @@ public class LittleVoxelUtils {
         LittleTiles.LOGGER.info("Stage 7 - Group construction (fast merge): {} tiles, {} boxes: {} ms",
                 result.totalTiles(), totalBoxesAfter, System.currentTimeMillis() - stageStart);
 
-        // 8. 最终处理
         stageStart = System.currentTimeMillis();
         translateToOrigin(result);
         LittleTiles.LOGGER.info("Stage 8 - Grid normalization & translation: {} ms", System.currentTimeMillis() - stageStart);
@@ -249,7 +238,7 @@ public class LittleVoxelUtils {
         return result;
     }
 
-    // ========== BVH 实现 ==========
+    // ========== BVH Implementation ==========
 
     private static class BVHNode {
         float minX, minY, minZ, maxX, maxY, maxZ;
@@ -361,11 +350,11 @@ public class LittleVoxelUtils {
         return queryBVH(node.right, x, y, z);
     }
 
-    // ========== SourceBox（仅普通盒子） ==========
+    // ========== SourceBox (plain boxes only) ==========
 
     private static class SourceBox {
         final LittleTile tile;
-        private final float[][] corners; // 8 corners
+        private final float[][] corners;
 
         SourceBox(LittleBox box, LittleTile tile) {
             this.tile = tile;
@@ -390,16 +379,13 @@ public class LittleVoxelUtils {
         }
     }
 
-    // ========== 斜面体素化辅助（射线法） ==========
-
-    // ========== 从 VectorFanCache 构建三角形网格 ==========
+    // ========== Slope voxelization helper (ray casting) ==========
 
     private static float[][] buildTrianglesFromCache(LittleTransformableBox.VectorFanCache cache) {
         List<float[]> triList = new ArrayList<>();
         for (Facing facing : Facing.VALUES) {
             LittleTransformableBox.VectorFanFaceCache faceCache = cache.get(facing);
             if (faceCache == null) continue;
-            // 收集该面的所有多边形（axisStrips + tiltedStrips）
             List<VectorFan> fans = new ArrayList<>();
             if (faceCache.hasAxisStrip()) {
                 fans.addAll(faceCache.axisStrips);
@@ -408,7 +394,6 @@ public class LittleVoxelUtils {
                 if (faceCache.tiltedStrip1 != null) fans.add(faceCache.tiltedStrip1);
                 if (faceCache.tiltedStrip2 != null) fans.add(faceCache.tiltedStrip2);
             }
-            // 对每个多边形进行扇形三角化
             for (VectorFan fan : fans) {
                 int n = fan.count();
                 if (n < 3) continue;
@@ -427,45 +412,6 @@ public class LittleVoxelUtils {
         return triList.toArray(new float[0][]);
     }
 
-    /**
-     * 从8个角点构建三角形网格（6个面，每个面拆成2个三角形）
-     * 角点顺序必须为 BoxCorner 顺序：EDS, EUS, WDS, WUS, EDN, EUN, WDN, WUN
-     */
-    private static float[][] buildTriangleVertices(Vec3f[] corners) {
-        int[][] faceIndices = {
-                // 底面 (y-)
-                {0, 1, 3}, {0, 3, 2},
-                // 顶面 (y+)
-                {4, 5, 7}, {4, 7, 6},
-                // 前面 (z-)
-                {0, 1, 5}, {0, 5, 4},
-                // 后面 (z+)
-                {2, 3, 7}, {2, 7, 6},
-                // 左面 (x-)
-                {0, 2, 6}, {0, 6, 4},
-                // 右面 (x+)
-                {1, 3, 7}, {1, 7, 5}
-        };
-        float[][] triVerts = new float[12][9];
-        for (int i = 0; i < 12; i++) {
-            int[] idx = faceIndices[i];
-            triVerts[i][0] = corners[idx[0]].x;
-            triVerts[i][1] = corners[idx[0]].y;
-            triVerts[i][2] = corners[idx[0]].z;
-            triVerts[i][3] = corners[idx[1]].x;
-            triVerts[i][4] = corners[idx[1]].y;
-            triVerts[i][5] = corners[idx[1]].z;
-            triVerts[i][6] = corners[idx[2]].x;
-            triVerts[i][7] = corners[idx[2]].y;
-            triVerts[i][8] = corners[idx[2]].z;
-        }
-        return triVerts;
-    }
-
-    /**
-     * 使用射线法（Möller–Trumbore 算法）判断点是否在多面体内部
-     * 沿 +X 方向发射射线，统计与所有三角形的交点数目，奇数则在内部
-     */
     private static boolean isPointInPolyhedron(float px, float py, float pz, float[][] triVerts) {
         int hitCount = 0;
         float[] orig = {px, py, pz};
@@ -481,9 +427,6 @@ public class LittleVoxelUtils {
         return hitCount % 2 == 1;
     }
 
-    /**
-     * Möller–Trumbore 射线与三角形相交检测
-     */
     private static boolean rayTriangleIntersect(float[] orig, float[] dir, float[] v0, float[] v1, float[] v2) {
         float[] edge1 = {v1[0]-v0[0], v1[1]-v0[1], v1[2]-v0[2]};
         float[] edge2 = {v2[0]-v0[0], v2[1]-v0[1], v2[2]-v0[2]};
@@ -509,7 +452,7 @@ public class LittleVoxelUtils {
         return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
     }
 
-    // ========== 辅助 ==========
+    // ========== Helper ==========
 
     private static void translateToOrigin(LittleGroup group) {
         LittleVec min = group.getMinVec();
