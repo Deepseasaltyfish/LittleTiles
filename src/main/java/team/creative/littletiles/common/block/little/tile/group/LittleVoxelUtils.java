@@ -28,7 +28,7 @@ public class LittleVoxelUtils {
 
     /**
      * Rotates a voxel group with specified parallelism.
-     * Uses forward mapping + per-column Y merge for optimal performance.
+     * Uses forward mapping of voxel corners + AABB fill to prevent holes.
      */
     public static LittleGroup rotateVoxels(LittleGroup group, float yaw, float pitch, float roll, int parallelism) {
         long startTotal = System.currentTimeMillis();
@@ -46,41 +46,74 @@ public class LittleVoxelUtils {
         stageStart = System.currentTimeMillis();
         Matrix4f rot = new Matrix4f().rotationXYZ(pitch, yaw, roll);
         Vector3f vec = new Vector3f();
+        Vector3f[] cornerVecs = new Vector3f[8];
+        for (int i = 0; i < 8; i++) cornerVecs[i] = new Vector3f();
         LittleTiles.LOGGER.warn("Stage 2 - Matrix construction: {} ms", System.currentTimeMillis() - stageStart);
 
-        // 3. Collect source voxels per material, forward-project and group by (x,z) column
+        // 3. Forward project voxels using corner-based AABB fill
         stageStart = System.currentTimeMillis();
         Map<LittleTile, Map<Long, Set<Integer>>> materialColumns = new ConcurrentHashMap<>();
-
-        // Count total source voxels for logging
-        long[] totalVoxelCount = {0};
+        long[] totalSourceVoxels = {0};
+        long[] totalTargetVoxels = {0};
 
         int threads = parallelism > 0 ? parallelism : Runtime.getRuntime().availableProcessors();
         ForkJoinPool pool = new ForkJoinPool(threads);
 
         try {
             pool.submit(() -> {
-                // Parallel over all tiles and boxes
                 copy.allTiles().forEach(tile -> {
                     for (LittleBox box : tile) {
-                        // Enumerate every unit voxel inside this box
                         for (int x = box.minX; x < box.maxX; x++) {
                             for (int y = box.minY; y < box.maxY; y++) {
                                 for (int z = box.minZ; z < box.maxZ; z++) {
-                                    synchronized (totalVoxelCount) {
-                                        totalVoxelCount[0]++;
+                                    synchronized (totalSourceVoxels) {
+                                        totalSourceVoxels[0]++;
                                     }
-                                    // Forward transform the center of this voxel
-                                    vec.set(x + 0.5f, y + 0.5f, z + 0.5f);
-                                    rot.transformPosition(vec);
-                                    int tx = Math.round(vec.x());
-                                    int ty = Math.round(vec.y());
-                                    int tz = Math.round(vec.z());
-                                    // Group by (tx, tz) column, collect ty
-                                    long key = ((long) tx << 32) | (tz & 0xffffffffL);
-                                    materialColumns.computeIfAbsent(tile, k -> new ConcurrentHashMap<>())
-                                            .computeIfAbsent(key, k -> ConcurrentHashMap.newKeySet())
-                                            .add(ty);
+
+                                    // Compute rotated bounding box of this unit voxel
+                                    float[][] corners = {
+                                            {x, y, z}, {x+1, y, z}, {x, y+1, z}, {x+1, y+1, z},
+                                            {x, y, z+1}, {x+1, y, z+1}, {x, y+1, z+1}, {x+1, y+1, z+1}
+                                    };
+                                    float minX = Float.POSITIVE_INFINITY, maxX = Float.NEGATIVE_INFINITY;
+                                    float minY = Float.POSITIVE_INFINITY, maxY = Float.NEGATIVE_INFINITY;
+                                    float minZ = Float.POSITIVE_INFINITY, maxZ = Float.NEGATIVE_INFINITY;
+                                    for (int i = 0; i < 8; i++) {
+                                        vec.set(corners[i][0], corners[i][1], corners[i][2]);
+                                        rot.transformPosition(vec);
+                                        // Store transformed corner in temp vector for next iteration? Not needed.
+                                        float cx = vec.x(), cy = vec.y(), cz = vec.z();
+                                        if (cx < minX) minX = cx;
+                                        if (cx > maxX) maxX = cx;
+                                        if (cy < minY) minY = cy;
+                                        if (cy > maxY) maxY = cy;
+                                        if (cz < minZ) minZ = cz;
+                                        if (cz > maxZ) maxZ = cz;
+                                    }
+
+                                    int startX = (int)Math.floor(minX);
+                                    int endX = (int)Math.ceil(maxX);
+                                    int startY = (int)Math.floor(minY);
+                                    int endY = (int)Math.ceil(maxY);
+                                    int startZ = (int)Math.floor(minZ);
+                                    int endZ = (int)Math.ceil(maxZ);
+
+                                    // Add all voxels in this AABB to column map
+                                    for (int tx = startX; tx < endX; tx++) {
+                                        for (int tz = startZ; tz < endZ; tz++) {
+                                            long key = ((long) tx << 32) | (tz & 0xffffffffL);
+                                            // We need to add all Y values for this column
+                                            // Use a local set per column to avoid repeated computeIfAbsent overhead
+                                            Map<Long, Set<Integer>> colMap = materialColumns.computeIfAbsent(tile, k -> new ConcurrentHashMap<>());
+                                            Set<Integer> ySet = colMap.computeIfAbsent(key, k -> ConcurrentHashMap.newKeySet());
+                                            for (int ty = startY; ty < endY; ty++) {
+                                                ySet.add(ty);
+                                                synchronized (totalTargetVoxels) {
+                                                    totalTargetVoxels[0]++;
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -91,8 +124,8 @@ public class LittleVoxelUtils {
             pool.shutdown();
         }
 
-        LittleTiles.LOGGER.warn("Stage 3 - Forward projection ({} threads): {} ms, {} source voxels processed",
-                threads, System.currentTimeMillis() - stageStart, totalVoxelCount[0]);
+        LittleTiles.LOGGER.warn("Stage 3 - Forward projection (AABB fill, {} threads): {} ms, {} source voxels, {} target voxels generated",
+                threads, System.currentTimeMillis() - stageStart, totalSourceVoxels[0], totalTargetVoxels[0]);
 
         // 4. Build result group by merging columns into contiguous Y-runs
         stageStart = System.currentTimeMillis();
