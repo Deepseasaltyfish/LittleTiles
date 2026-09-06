@@ -51,14 +51,12 @@ public class LittleVoxelUtils {
         List<SourceBox> sourceBoxes = new ArrayList<>();
         int slopeCount = 0;
 
-        // ---------- 处理每个 tile ----------
         for (LittleTile tile : copy.allTiles()) {
             for (LittleBox box : tile) {
                 if (box instanceof LittleTransformableBox) {
                     slopeCount++;
                     LittleTransformableBox transformable = (LittleTransformableBox) box;
 
-                    // 提取该斜面占据的所有单位体素
                     List<LittleVec> voxels = extractVoxelsFromTransformable(transformable, grid);
                     for (LittleVec v : voxels) {
                         LittleBox unitBox = new LittleBox(v.x, v.y, v.z, v.x + 1, v.y + 1, v.z + 1);
@@ -77,12 +75,10 @@ public class LittleVoxelUtils {
         LittleTiles.LOGGER.info("Stage 2 - Extracted {} source boxes ({} slopes voxelized): {} ms",
                 sourceBoxes.size(), slopeCount, System.currentTimeMillis() - stageStart);
 
-        // ---------- BVH 构建 ----------
         stageStart = System.currentTimeMillis();
         BVHNode root = buildBVH(sourceBoxes);
         LittleTiles.LOGGER.info("Stage 3 - BVH construction: {} ms", System.currentTimeMillis() - stageStart);
 
-        // ---------- 旋转包围盒计算 ----------
         stageStart = System.currentTimeMillis();
         Matrix4f rot = new Matrix4f().rotationXYZ(pitch, yaw, roll);
         Vector3f vec = new Vector3f();
@@ -116,12 +112,10 @@ public class LittleVoxelUtils {
         int totalVoxels = (int)totalVoxelsLong;
         LittleTiles.LOGGER.info("Stage 4 - Bounding box computed, {} target voxels: {} ms", totalVoxels, System.currentTimeMillis() - stageStart);
 
-        // ---------- 逆矩阵 ----------
         stageStart = System.currentTimeMillis();
         Matrix4f invRot = new Matrix4f(rot).invert();
         LittleTiles.LOGGER.info("Stage 5 - Matrix inversion: {} ms", System.currentTimeMillis() - stageStart);
 
-        // ---------- 并行采样 ----------
         stageStart = System.currentTimeMillis();
         Map<LittleTile, Set<LittleVec>> resultMap = new ConcurrentHashMap<>();
         int threads = parallelism > 0 ? parallelism : Runtime.getRuntime().availableProcessors();
@@ -159,7 +153,6 @@ public class LittleVoxelUtils {
         int hitCount = resultMap.values().stream().mapToInt(Set::size).sum();
         LittleTiles.LOGGER.info("Stage 6 - Parallel sampling ({} threads): {} ms, {} voxels hit", threads, System.currentTimeMillis() - stageStart, hitCount);
 
-        // ---------- 合并 ----------
         stageStart = System.currentTimeMillis();
         LittleGroup result = new LittleGroup();
         int totalBoxesAfter = 0;
@@ -205,7 +198,6 @@ public class LittleVoxelUtils {
         LittleTiles.LOGGER.info("Stage 7 - Group construction (fast merge): {} tiles, {} boxes: {} ms",
                 result.totalTiles(), totalBoxesAfter, System.currentTimeMillis() - stageStart);
 
-        // ---------- 归零 ----------
         stageStart = System.currentTimeMillis();
         translateToOrigin(result);
         LittleTiles.LOGGER.info("Stage 8 - Grid normalization & translation: {} ms", System.currentTimeMillis() - stageStart);
@@ -214,33 +206,17 @@ public class LittleVoxelUtils {
         return result;
     }
 
-    // ========== 从 LittleTransformableBox 提取体素（复制自 CurveBlueprintGenerator） ==========
+    // ========== 提取斜面体素（使用 intersectsWith 精确检测） ==========
 
     private static List<LittleVec> extractVoxelsFromTransformable(LittleTransformableBox box, LittleGrid grid) {
         List<LittleVec> voxels = new ArrayList<>();
-        // 直接使用 fillInSpace 填充体素
-        int w = box.maxX - box.minX;
-        int h = box.maxY - box.minY;
-        int d = box.maxZ - box.minZ;
-        if (w <= 0 || h <= 0 || d <= 0) return voxels;
-
-        boolean[][][] filled = new boolean[w][h][d];
-        box.fillInSpace(box, filled); // 对于 LittleTransformableBox，这填充其 AABB
-
-        // 但我们需要的是实际的倾斜体素，而不是 AABB。
-        // 为了正确处理，我们使用 extractBox 逐个单位体素检测。
-        // 但由于 extractBox 可能产生 null 或非单位 box，我们可以遍历整个 AABB，
-        // 对每个单位体素调用 extractBox，如果返回非 null 且是单位体素则添加。
         for (int x = box.minX; x < box.maxX; x++) {
             for (int y = box.minY; y < box.maxY; y++) {
                 for (int z = box.minZ; z < box.maxZ; z++) {
-                    LittleBox extracted = box.extractBox(x, y, z, null);
-                    if (extracted != null && extracted.isSolid() && extracted instanceof LittleBox) {
-                        // 确保返回的正好是单位体素
-                        if (extracted.minX == x && extracted.minY == y && extracted.minZ == z &&
-                                extracted.maxX == x+1 && extracted.maxY == y+1 && extracted.maxZ == z+1) {
-                            voxels.add(new LittleVec(x, y, z));
-                        }
+                    LittleBox unit = new LittleBox(x, y, z, x + 1, y + 1, z + 1);
+                    // 使用静态方法进行相交检测
+                    if (LittleBox.intersectsWith(box, unit)) {
+                        voxels.add(new LittleVec(x, y, z));
                     }
                 }
             }
