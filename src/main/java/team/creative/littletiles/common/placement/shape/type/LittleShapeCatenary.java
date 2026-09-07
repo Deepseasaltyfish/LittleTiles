@@ -1,5 +1,8 @@
 package team.creative.littletiles.common.placement.shape.type;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import team.creative.creativecore.common.util.math.vec.Vec3d;
 import team.creative.littletiles.client.tool.shaper.ShapePosition;
 import team.creative.littletiles.client.tool.shaper.ShapeSelection;
@@ -18,6 +21,7 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
     private static final int LINE_SEARCH_ITER = 20;
     private static final int MAX_VOXELS = 1_000_000;
     private static final int MIN_STEPS = 4;
+    private static final double MAX_POINT_SPACING = 0.4;
 
     public LittleShapeCatenary() {
         super(2);
@@ -52,7 +56,7 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
         double ux = dx / horizontalDist;
         double uz = dz / horizontalDist;
 
-        double drop = config.drop; // grid units
+        double drop = config.drop;
         double yLow = Math.min(y1, y2);
         double rise1 = y1 - yLow;
         double rise2 = y2 - yLow;
@@ -70,21 +74,70 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
 
         double a = params[0];
         double x0 = params[1];
-        double b = yLow - drop - a;
+        double b = -a * Math.cosh(x0 / a);
 
-        int steps = computeSteps(horizontalDist, a, x0, b, boxes.grid.pixelLength);
-        if (steps > MAX_VOXELS) {
+        List<Vec3d> points = generateUniformArcPoints(horizontalDist, a, x0, b, p1, ux, uz);
+        if (points.size() > MAX_VOXELS) {
             drawLine(boxes, p1, p2, horizontalDist, ux, uz, config.thickness);
             return;
         }
 
-        double stepX = horizontalDist / steps;
-        for (int i = 0; i <= steps; i++) {
-            double x = i * stepX;
-            double y = a * Math.cosh((x - x0) / a) + b;
-            Vec3d world = new Vec3d(x1 + x * ux, y, z1 + x * uz);
+        for (Vec3d world : points) {
             addBox(boxes, world, config.thickness);
         }
+    }
+
+    /* Generate points uniformly spaced along curve arc length */
+    private List<Vec3d> generateUniformArcPoints(double d, double a, double x0, double b, Vec3d p1, double ux, double uz) {
+        int subSteps = 200;
+        double step = d / subSteps;
+        double[] arcLens = new double[subSteps + 1];
+        double totalArcLen = 0.0;
+        double prevX = 0.0, prevY = a * Math.cosh((prevX - x0) / a) + b;
+        arcLens[0] = 0.0;
+        for (int i = 1; i <= subSteps; i++) {
+            double currX = i * step;
+            double currY = a * Math.cosh((currX - x0) / a) + b;
+            double dx_ = currX - prevX, dy_ = currY - prevY;
+            totalArcLen += Math.sqrt(dx_ * dx_ + dy_ * dy_);
+            arcLens[i] = totalArcLen;
+            prevX = currX;
+            prevY = currY;
+        }
+
+        int numPoints = (int) Math.ceil(totalArcLen / MAX_POINT_SPACING);
+        numPoints = Math.max(MIN_STEPS, numPoints);
+
+        List<Vec3d> points = new ArrayList<>(numPoints + 1);
+        double targetArcStep = totalArcLen / numPoints;
+
+        double startX = 0;
+        double startY = a * Math.cosh((startX - x0) / a) + b;
+        points.add(new Vec3d(p1.x + startX * ux, p1.y + startY, p1.z + startX * uz));
+
+        for (int i = 1; i < numPoints; i++) {
+            double targetArc = i * targetArcStep;
+            int lo = 0, hi = subSteps;
+            while (lo < hi) {
+                int mid = (lo + hi) / 2;
+                if (arcLens[mid] < targetArc) lo = mid + 1;
+                else hi = mid;
+            }
+            if (lo == 0) lo = 1;
+            if (lo > subSteps) lo = subSteps;
+            double segStart = arcLens[lo - 1];
+            double segEnd = arcLens[lo];
+            double frac = (segEnd - segStart) < EPS ? 0 : (targetArc - segStart) / (segEnd - segStart);
+            double x = (lo - 1 + frac) * step;
+            double y = a * Math.cosh((x - x0) / a) + b;
+            points.add(new Vec3d(p1.x + x * ux, p1.y + y, p1.z + x * uz));
+        }
+
+        double endX = d;
+        double endY = a * Math.cosh((endX - x0) / a) + b;
+        points.add(new Vec3d(p1.x + endX * ux, p1.y + endY, p1.z + endX * uz));
+
+        return points;
     }
 
     /* Solves a and x0 via Newton's method with line search. Returns null if fails. */
@@ -148,25 +201,9 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
         return new double[]{a, x0};
     }
 
-    private int computeSteps(double d, double a, double x0, double b, double pixelSize) {
-        int subSteps = 100;
-        double step = d / subSteps;
-        double arcLen = 0.0;
-        double prevX = 0.0, prevY = a * Math.cosh((prevX - x0) / a) + b;
-        for (int i = 1; i <= subSteps; i++) {
-            double currX = i * step;
-            double currY = a * Math.cosh((currX - x0) / a) + b;
-            double dx = currX - prevX, dy = currY - prevY;
-            arcLen += Math.sqrt(dx * dx + dy * dy);
-            prevX = currX;
-            prevY = currY;
-        }
-        int steps = (int) Math.ceil(arcLen / (pixelSize * 0.8));
-        return Math.max(MIN_STEPS, steps);
-    }
-
     private void drawLine(LittleBoxes boxes, Vec3d p1, Vec3d p2, double d, double ux, double uz, int thickness) {
-        int steps = Math.max(MIN_STEPS, (int) Math.ceil(d / boxes.grid.pixelLength * 2));
+        int steps = (int) Math.ceil(d / MAX_POINT_SPACING);
+        steps = Math.max(MIN_STEPS, steps);
         double step = 1.0 / steps;
         for (int i = 0; i <= steps; i++) {
             double t = i * step;
