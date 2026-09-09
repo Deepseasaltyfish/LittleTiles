@@ -24,8 +24,8 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
     private static final int MAX_ITER = 300;
     private static final int LINE_SEARCH_ITER = 20;
     private static final int MAX_VOXELS = 1_000_000;
-    private static final int MIN_STEPS = 4;
-    private static final double MAX_POINT_SPACING = 0.4;
+    private static final int MIN_STEPS = 6;
+    private static final double MAX_POINT_SPACING = 0.35;
 
     public LittleShapeCatenary() {
         super(2);
@@ -65,11 +65,7 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
         double rise1 = y1 - yLow;
         double rise2 = y2 - yLow;
 
-        if (drop < EPS) {
-            drawLine(boxes, p1, p2, horizontalDist, ux, uz, config.thickness);
-            return;
-        }
-
+        // 不再提前返回，让求解器处理 drop=0
         double[] params = solveParams(horizontalDist, rise1, rise2, drop, config.mode);
         if (params == null) {
             drawLine(boxes, p1, p2, horizontalDist, ux, uz, config.thickness);
@@ -92,7 +88,7 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
     }
 
     /* Generates points uniformly along arc length using precomputed arc length table.
-     * This ensures point spacing is ≤ MAX_POINT_SPACING (0.4 voxels) in 3D space,
+     * This ensures point spacing is ≤ MAX_POINT_SPACING (0.35 voxels) in 3D space,
      * preventing gaps even when the curve is nearly vertical near endpoints. */
     private List<Vec3d> generateUniformArcPoints(double d, double a, double x0, double b, Vec3d p1, double ux, double uz) {
         int subSteps = 200;
@@ -153,20 +149,25 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
      * mode controls x0 bounds: clamped to [0,d] for BETWEEN, unconstrained for BEYOND.
      * Returns null if no solution (falls back to straight line). */
     private double[] solveParams(double d, double r1, double r2, double drop, Mode mode) {
-        double a = Math.clamp((d * d) / (8 * drop), MIN_A, Double.MAX_VALUE);
+        double a = Math.clamp((d * d) / (8 * drop + 1e-12), MIN_A, Double.MAX_VALUE);
         double x0 = d * 0.5;
 
+        // BEYOND mode: set initial guess on the correct external side
         if (mode == Mode.BEYOND) {
-            double sum = r1 + r2 + 2 * drop;
-            if (sum > EPS) {
-                double temp = d * (r1 + drop) / sum;
-                if (temp < 0.1 * d) {
-                    x0 = -d * 0.5;
-                } else if (temp > 0.9 * d) {
-                    x0 = d * 1.5;
-                } else {
-                    x0 = temp;
-                }
+            // Determine which endpoint is lower
+            boolean lowerLeft = r1 < EPS;   // lower at x=0
+            boolean lowerRight = r2 < EPS;  // lower at x=d
+            if (lowerLeft) {
+                // External solution is to the left (x0 < 0)
+                double magnitude = d * 0.5 + Math.min(10.0, drop / (d * d + 1e-12) * 5);
+                x0 = -Math.max(d * 0.5, magnitude);
+            } else if (lowerRight) {
+                // External solution is to the right (x0 > d)
+                double magnitude = d * 0.5 + Math.min(10.0, drop / (d * d + 1e-12) * 5);
+                x0 = d + Math.max(d * 0.5, magnitude);
+            } else {
+                // Fallback (should not happen because one of r1,r2 is zero)
+                x0 = -d * 0.5;
             }
         }
 
@@ -201,6 +202,7 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
                 if (mode == Mode.BETWEEN) {
                     x0New = Math.clamp(x0 - step * dx0, MIN_A, d - MIN_A);
                 } else {
+                    // BEYOND: allow x0 to go anywhere, but prevent extreme values
                     x0New = x0 - step * dx0;
                     if (x0New < -d * 10) x0New = -d * 10;
                     if (x0New > d * 10) x0New = d * 10;
@@ -224,6 +226,7 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
 
         if (Double.isNaN(a) || a < MIN_A) return null;
         if (mode == Mode.BETWEEN && (x0 < 0 || x0 > d)) return null;
+        // For BEYOND, accept any x0 (including internal) as valid catenary segment.
         return new double[]{a, x0};
     }
 
