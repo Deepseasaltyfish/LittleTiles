@@ -13,9 +13,12 @@ import team.creative.littletiles.common.placement.shape.LittleShape;
 import team.creative.littletiles.common.placement.shape.config.CatenaryConfig;
 import team.creative.littletiles.common.placement.shape.config.CatenaryConfig.Mode;
 
-/* Generates a catenary curve between two points with configurable drop and mode.
+/**
+ * Generates a catenary curve between two points with configurable drop and mode.
+ * <p>
  * drop: downward distance from the lower endpoint to the lowest point (grid units).
- * mode: BETWEEN → the lowest point lies between endpoints; BEYOND → the lowest point outside.*/
+ * mode: BETWEEN → the lowest point lies between endpoints; BEYOND → the lowest point lies outside.
+ */
 public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
 
     private static final double EPS = 1e-8;
@@ -67,7 +70,6 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
 
         double[] params;
         if (drop < EPS) {
-            // drop=0: explicit solution (minimum at lower endpoint)
             params = solveDropZero(horizontalDist, rise1, rise2);
         } else {
             params = solveParams(horizontalDist, rise1, rise2, drop, config.mode);
@@ -83,7 +85,7 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
         double b = -a * Math.cosh(x0 / a);
 
         List<Vec3d> points = generateUniformArcPoints(horizontalDist, a, x0, b, p1, ux, uz);
-        if (points.size() > MAX_VOXELS) {
+        if (points == null || points.size() > MAX_VOXELS) {
             drawLine(boxes, p1, p2, horizontalDist, ux, uz, config.thickness);
             return;
         }
@@ -93,38 +95,43 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
         }
     }
 
-    /* Special case: drop=0 (minimum at lower endpoint) */
+    /**
+     * Special case: drop=0 (minimum at lower endpoint).
+     * Solves a*(cosh(d/a)-1) = |r1 - r2| using binary search.
+     */
     private double[] solveDropZero(double d, double r1, double r2) {
-        // Determine which endpoint is lower (r1==0 or r2==0)
         double heightDiff = Math.abs(r1 - r2);
         if (heightDiff < EPS) {
-            // Both endpoints at same height -> horizontal line (a -> infinity)
+            // Both endpoints at same height -> straight horizontal line.
             return new double[]{1e6, 0};
         }
-        // Solve a*(cosh(d/a)-1) = heightDiff
+
         double target = heightDiff;
         double aLow = MIN_A, aHigh = 1e6;
         for (int i = 0; i < 100; i++) {
             double aMid = (aLow + aHigh) * 0.5;
             double val = aMid * (Math.cosh(d / aMid) - 1);
-
-            if (val > target) { // 修改为 '>'
-                aLow = aMid;    // 值太大了，说明 a 太小，需要增大 a
-            } else {            // val < target
-                aHigh = aMid;   // 值太小了，说明 a 太大，需要减小 a
+            // Function decreases as a increases.
+            if (val > target) {
+                aLow = aMid;   // current a too small, need larger a
+            } else {
+                aHigh = aMid;  // current a too large, need smaller a
             }
             if (aHigh - aLow < 1e-8) break;
         }
         double a = (aLow + aHigh) * 0.5;
         if (Double.isNaN(a) || a < MIN_A) return null;
-        // x0 is at the lower endpoint: if r1 is lower, x0=0; if r2 is lower, x0=d
+
+        // x0 is at the lower endpoint: 0 if r1 is lower, d if r2 is lower.
         double x0 = (r1 < r2) ? 0.0 : d;
         return new double[]{a, x0};
     }
 
-    /* Generates points uniformly along arc length using precomputed arc length table.
-     * This ensures point spacing is ≤ MAX_POINT_SPACING (0.35 voxels) in 3D space,
-     * preventing gaps even when the curve is nearly vertical near endpoints. */
+    /**
+     * Generates points uniformly along the curve arc length.
+     * If arc length computation overflows or yields invalid values, returns null
+     * (caller falls back to straight line).
+     */
     private List<Vec3d> generateUniformArcPoints(double d, double a, double x0, double b, Vec3d p1, double ux, double uz) {
         int subSteps = 200;
         double step = d / subSteps;
@@ -132,28 +139,45 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
         double totalArcLen = 0.0;
         double prevX = 0.0, prevY = a * Math.cosh((prevX - x0) / a) + b;
         arcLens[0] = 0.0;
+
         for (int i = 1; i <= subSteps; i++) {
             double currX = i * step;
-            double currY = a * Math.cosh((currX - x0) / a) + b;
-            double dx_ = currX - prevX, dy_ = currY - prevY;
+            double currY;
+            try {
+                currY = a * Math.cosh((currX - x0) / a) + b;
+            } catch (Exception e) {
+                // cosh overflow, abort
+                return null;
+            }
+            if (!Double.isFinite(currY)) {
+                return null;
+            }
+            double dx_ = currX - prevX;
+            double dy_ = currY - prevY;
             double segLen = Math.sqrt(dx_ * dx_ + dy_ * dy_);
-            if (Double.isNaN(segLen) || Double.isInfinite(segLen)) {
-                // Fallback: use horizontal step
-                segLen = step;
+            if (!Double.isFinite(segLen)) {
+                return null;
             }
             totalArcLen += segLen;
+            if (!Double.isFinite(totalArcLen) || totalArcLen > MAX_VOXELS * MAX_POINT_SPACING) {
+                return null;
+            }
             arcLens[i] = totalArcLen;
             prevX = currX;
             prevY = currY;
         }
+
         if (totalArcLen < EPS) {
-            // Very short curve, use horizontal step count
-            int numPoints = Math.max(MIN_STEPS, (int)Math.ceil(d / MAX_POINT_SPACING));
+            // Very short, use horizontal spacing.
+            int numPoints = Math.max(MIN_STEPS, (int) Math.ceil(d / MAX_POINT_SPACING));
             List<Vec3d> points = new ArrayList<>(numPoints + 1);
             double hStep = d / numPoints;
             for (int i = 0; i <= numPoints; i++) {
                 double x = i * hStep;
                 double y = a * Math.cosh((x - x0) / a) + b;
+                if (!Double.isFinite(y)) {
+                    return null;
+                }
                 points.add(new Vec3d(p1.x + x * ux, p1.y + y, p1.z + x * uz));
             }
             return points;
@@ -161,6 +185,9 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
 
         int numPoints = (int) Math.ceil(totalArcLen / MAX_POINT_SPACING);
         numPoints = Math.max(MIN_STEPS, numPoints);
+        if (numPoints <= 0 || numPoints > MAX_VOXELS) {
+            return null;
+        }
 
         List<Vec3d> points = new ArrayList<>(numPoints + 1);
         double targetArcStep = totalArcLen / numPoints;
@@ -184,42 +211,51 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
             double frac = (segEnd - segStart) < EPS ? 0 : (targetArc - segStart) / (segEnd - segStart);
             double x = (lo - 1 + frac) * step;
             double y = a * Math.cosh((x - x0) / a) + b;
+            if (!Double.isFinite(y)) {
+                return null;
+            }
             points.add(new Vec3d(p1.x + x * ux, p1.y + y, p1.z + x * uz));
         }
 
         double endX = d;
         double endY = a * Math.cosh((endX - x0) / a) + b;
+        if (!Double.isFinite(endY)) {
+            return null;
+        }
         points.add(new Vec3d(p1.x + endX * ux, p1.y + endY, p1.z + endX * uz));
 
         return points;
     }
 
-    /* Solves a and x0 for equations:
+    /**
+     * Solves the two catenary equations:
      *   a*(cosh(x0/a)-1) = r1+drop
      *   a*(cosh((d-x0)/a)-1) = r2+drop
-     * where r1,r2 are endpoint heights relative to the lower endpoint.
+     * where r1, r2 are endpoint heights relative to the lower endpoint.
      * mode controls x0 bounds: clamped to [0,d] for BETWEEN, unconstrained for BEYOND.
-     * Returns null if no solution (falls back to straight line). */
+     * Returns null if no solution (caller falls back to straight line).
+     */
     private double[] solveParams(double d, double r1, double r2, double drop, Mode mode) {
         double a = Math.clamp((d * d) / (8 * drop + 1e-12), MIN_A, Double.MAX_VALUE);
         double x0 = d * 0.5;
 
-        // BEYOND mode: set initial guess on the correct external side
+        // BEYOND mode: set initial guess on the correct external side, but limit its magnitude.
         if (mode == Mode.BEYOND) {
             boolean lowerLeft = r1 < EPS;
             boolean lowerRight = r2 < EPS;
+            double maxOffset = Math.min(d * 5, d * 0.5 + Math.min(10.0, drop / (d * d + 1e-12) * 5));
             if (lowerLeft) {
-                double magnitude = d * 0.5 + Math.min(10.0, drop / (d * d + 1e-12) * 5);
-                x0 = -Math.max(d * 0.5, magnitude);
+                double magnitude = Math.max(d * 0.5, maxOffset);
+                x0 = -magnitude;
             } else if (lowerRight) {
-                double magnitude = d * 0.5 + Math.min(10.0, drop / (d * d + 1e-12) * 5);
-                x0 = d + Math.max(d * 0.5, magnitude);
+                double magnitude = Math.max(d * 0.5, maxOffset);
+                x0 = d + magnitude;
             } else {
                 x0 = -d * 0.5;
             }
         }
 
-        // Newton iteration
+        // Newton iteration with line search.
         for (int iter = 0; iter < MAX_ITER; iter++) {
             double cosh1 = Math.cosh(x0 / a);
             double cosh2 = Math.cosh((d - x0) / a);
@@ -276,6 +312,7 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
         return new double[]{a, x0};
     }
 
+    /** Draws a straight line when the solver fails or curve would be too dense. */
     private void drawLine(LittleBoxes boxes, Vec3d p1, Vec3d p2, double d, double ux, double uz, int thickness) {
         int steps = Math.max(MIN_STEPS, (int) Math.ceil(d / MAX_POINT_SPACING));
         double step = 1.0 / steps;
@@ -287,6 +324,7 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
         }
     }
 
+    /** Adds a vertical column when endpoints are almost aligned horizontally. */
     private void addColumn(LittleBoxes boxes, Vec3d p1, Vec3d p2, int thickness) {
         int minX = (int) Math.floor(Math.min(p1.x, p2.x));
         int minY = (int) Math.floor(Math.min(p1.y, p2.y));
@@ -299,6 +337,7 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
         boxes.add(box);
     }
 
+    /** Adds a single voxel box centered at the given position, applying thickness. */
     private void addBox(LittleBoxes boxes, Vec3d pos, int thickness) {
         int cx = (int) Math.round(pos.x);
         int cy = (int) Math.round(pos.y);
