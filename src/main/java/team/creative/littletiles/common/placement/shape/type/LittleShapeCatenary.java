@@ -65,8 +65,14 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
         double rise1 = y1 - yLow;
         double rise2 = y2 - yLow;
 
-        // 不再提前返回，让求解器处理 drop=0
-        double[] params = solveParams(horizontalDist, rise1, rise2, drop, config.mode);
+        double[] params;
+        if (drop < EPS) {
+            // drop=0: explicit solution (minimum at lower endpoint)
+            params = solveDropZero(horizontalDist, rise1, rise2);
+        } else {
+            params = solveParams(horizontalDist, rise1, rise2, drop, config.mode);
+        }
+
         if (params == null) {
             drawLine(boxes, p1, p2, horizontalDist, ux, uz, config.thickness);
             return;
@@ -87,6 +93,35 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
         }
     }
 
+    /* Special case: drop=0 (minimum at lower endpoint) */
+    private double[] solveDropZero(double d, double r1, double r2) {
+        // Determine which endpoint is lower (r1==0 or r2==0)
+        double heightDiff = Math.abs(r1 - r2);
+        if (heightDiff < EPS) {
+            // Both endpoints at same height -> horizontal line (a -> infinity)
+            return new double[]{1e6, 0};
+        }
+        // Solve a*(cosh(d/a)-1) = heightDiff
+        double target = heightDiff;
+        double aLow = MIN_A, aHigh = 1e6;
+        for (int i = 0; i < 100; i++) {
+            double aMid = (aLow + aHigh) * 0.5;
+            double val = aMid * (Math.cosh(d / aMid) - 1);
+
+            if (val > target) { // 修改为 '>'
+                aLow = aMid;    // 值太大了，说明 a 太小，需要增大 a
+            } else {            // val < target
+                aHigh = aMid;   // 值太小了，说明 a 太大，需要减小 a
+            }
+            if (aHigh - aLow < 1e-8) break;
+        }
+        double a = (aLow + aHigh) * 0.5;
+        if (Double.isNaN(a) || a < MIN_A) return null;
+        // x0 is at the lower endpoint: if r1 is lower, x0=0; if r2 is lower, x0=d
+        double x0 = (r1 < r2) ? 0.0 : d;
+        return new double[]{a, x0};
+    }
+
     /* Generates points uniformly along arc length using precomputed arc length table.
      * This ensures point spacing is ≤ MAX_POINT_SPACING (0.35 voxels) in 3D space,
      * preventing gaps even when the curve is nearly vertical near endpoints. */
@@ -101,10 +136,27 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
             double currX = i * step;
             double currY = a * Math.cosh((currX - x0) / a) + b;
             double dx_ = currX - prevX, dy_ = currY - prevY;
-            totalArcLen += Math.sqrt(dx_ * dx_ + dy_ * dy_);
+            double segLen = Math.sqrt(dx_ * dx_ + dy_ * dy_);
+            if (Double.isNaN(segLen) || Double.isInfinite(segLen)) {
+                // Fallback: use horizontal step
+                segLen = step;
+            }
+            totalArcLen += segLen;
             arcLens[i] = totalArcLen;
             prevX = currX;
             prevY = currY;
+        }
+        if (totalArcLen < EPS) {
+            // Very short curve, use horizontal step count
+            int numPoints = Math.max(MIN_STEPS, (int)Math.ceil(d / MAX_POINT_SPACING));
+            List<Vec3d> points = new ArrayList<>(numPoints + 1);
+            double hStep = d / numPoints;
+            for (int i = 0; i <= numPoints; i++) {
+                double x = i * hStep;
+                double y = a * Math.cosh((x - x0) / a) + b;
+                points.add(new Vec3d(p1.x + x * ux, p1.y + y, p1.z + x * uz));
+            }
+            return points;
         }
 
         int numPoints = (int) Math.ceil(totalArcLen / MAX_POINT_SPACING);
@@ -154,19 +206,15 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
 
         // BEYOND mode: set initial guess on the correct external side
         if (mode == Mode.BEYOND) {
-            // Determine which endpoint is lower
-            boolean lowerLeft = r1 < EPS;   // lower at x=0
-            boolean lowerRight = r2 < EPS;  // lower at x=d
+            boolean lowerLeft = r1 < EPS;
+            boolean lowerRight = r2 < EPS;
             if (lowerLeft) {
-                // External solution is to the left (x0 < 0)
                 double magnitude = d * 0.5 + Math.min(10.0, drop / (d * d + 1e-12) * 5);
                 x0 = -Math.max(d * 0.5, magnitude);
             } else if (lowerRight) {
-                // External solution is to the right (x0 > d)
                 double magnitude = d * 0.5 + Math.min(10.0, drop / (d * d + 1e-12) * 5);
                 x0 = d + Math.max(d * 0.5, magnitude);
             } else {
-                // Fallback (should not happen because one of r1,r2 is zero)
                 x0 = -d * 0.5;
             }
         }
@@ -202,7 +250,6 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
                 if (mode == Mode.BETWEEN) {
                     x0New = Math.clamp(x0 - step * dx0, MIN_A, d - MIN_A);
                 } else {
-                    // BEYOND: allow x0 to go anywhere, but prevent extreme values
                     x0New = x0 - step * dx0;
                     if (x0New < -d * 10) x0New = -d * 10;
                     if (x0New > d * 10) x0New = d * 10;
@@ -226,13 +273,11 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
 
         if (Double.isNaN(a) || a < MIN_A) return null;
         if (mode == Mode.BETWEEN && (x0 < 0 || x0 > d)) return null;
-        // For BEYOND, accept any x0 (including internal) as valid catenary segment.
         return new double[]{a, x0};
     }
 
     private void drawLine(LittleBoxes boxes, Vec3d p1, Vec3d p2, double d, double ux, double uz, int thickness) {
-        int steps = (int) Math.ceil(d / MAX_POINT_SPACING);
-        steps = Math.max(MIN_STEPS, steps);
+        int steps = Math.max(MIN_STEPS, (int) Math.ceil(d / MAX_POINT_SPACING));
         double step = 1.0 / steps;
         for (int i = 0; i <= steps; i++) {
             double t = i * step;
