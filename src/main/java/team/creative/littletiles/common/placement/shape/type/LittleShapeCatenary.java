@@ -210,7 +210,7 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
         if (mode == Mode.BEYOND) {
             boolean lowerLeft = r1 < EPS;
             boolean lowerRight = r2 < EPS;
-            double maxOffset = Math.clamp(d * 0.5, 10.0, d * 2.5);
+            double maxOffset = Math.min(d * 2.5, Math.max(d * 0.5, 10.0));
             if (lowerLeft) {
                 x0 = -maxOffset;
             } else if (lowerRight) {
@@ -249,7 +249,7 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
                 double aNew = Math.max(a - step * da, MIN_A);
                 double x0New;
                 if (mode == Mode.BETWEEN) {
-                    x0New = Math.clamp(x0 - step * dx0, MIN_A, d - MIN_A);
+                    x0New = Math.min(Math.max(x0 - step * dx0, MIN_A), d - MIN_A);
                 } else {
                     x0New = x0 - step * dx0;
                     double limit = d * 2.5;
