@@ -16,6 +16,11 @@ import team.creative.littletiles.common.placement.shape.config.HollowThicknessCo
 
 public class CatenaryConfig extends LittleShapeConfig {
 
+    public enum Mode {
+        BETWEEN, // minimum between endpoints (U shape)
+        BEYOND   // minimum outside endpoints (J shape, monotonic segment)
+    }
+
     @CreativeConfig
     @IntRangeSupplier(supplier = GridRange.class)
     public int thickness = 1;
@@ -24,13 +29,18 @@ public class CatenaryConfig extends LittleShapeConfig {
     @IntRange(min = 0, max = 128)
     public int drop = 16;
 
+    @CreativeConfig
+    public Mode mode = Mode.BETWEEN;
+
     @Override
     public List<Component> information() {
         return new TextBuilder()
                 .textColor(ChatFormatting.WHITE)
                 .translate("shape.config.thickness").text(": ").textColor(ChatFormatting.GRAY).text("" + thickness).newLine()
                 .textColor(ChatFormatting.WHITE)
-                .translate("shape.config.drop").text(": ").textColor(ChatFormatting.GRAY).text("" + drop)
+                .translate("shape.config.drop").text(": ").textColor(ChatFormatting.GRAY).text("" + drop).newLine()
+                .textColor(ChatFormatting.WHITE)
+                .translate("shape.config.catenary_mode").text(": ").textColor(ChatFormatting.GRAY).translate("shape.config.catenary_mode." + mode.name().toLowerCase())
                 .build();
     }
 

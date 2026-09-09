@@ -11,7 +11,11 @@ import team.creative.littletiles.common.math.box.collection.LittleBoxes;
 import team.creative.littletiles.common.math.vec.LittleVec;
 import team.creative.littletiles.common.placement.shape.LittleShape;
 import team.creative.littletiles.common.placement.shape.config.CatenaryConfig;
+import team.creative.littletiles.common.placement.shape.config.CatenaryConfig.Mode;
 
+/* Generates a catenary curve between two points with configurable drop and mode.
+ * drop: downward distance from the lower endpoint to the lowest point (grid units).
+ * mode: BETWEEN → the lowest point lies between endpoints; BEYOND → the lowest point outside.*/
 public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
 
     private static final double EPS = 1e-8;
@@ -66,7 +70,7 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
             return;
         }
 
-        double[] params = solveParams(horizontalDist, rise1, rise2, drop);
+        double[] params = solveParams(horizontalDist, rise1, rise2, drop, config.mode);
         if (params == null) {
             drawLine(boxes, p1, p2, horizontalDist, ux, uz, config.thickness);
             return;
@@ -87,7 +91,9 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
         }
     }
 
-    /* Generate points uniformly spaced along curve arc length */
+    /* Generates points uniformly along arc length using precomputed arc length table.
+     * This ensures point spacing is ≤ MAX_POINT_SPACING (0.4 voxels) in 3D space,
+     * preventing gaps even when the curve is nearly vertical near endpoints. */
     private List<Vec3d> generateUniformArcPoints(double d, double a, double x0, double b, Vec3d p1, double ux, double uz) {
         int subSteps = 200;
         double step = d / subSteps;
@@ -140,19 +146,31 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
         return points;
     }
 
-    /* Solves a and x0 via Newton's method with line search. Returns null if fails. */
-    private double[] solveParams(double d, double r1, double r2, double drop) {
+    /* Solves a and x0 for equations:
+     *   a*(cosh(x0/a)-1) = r1+drop
+     *   a*(cosh((d-x0)/a)-1) = r2+drop
+     * where r1,r2 are endpoint heights relative to the lower endpoint.
+     * mode controls x0 bounds: clamped to [0,d] for BETWEEN, unconstrained for BEYOND.
+     * Returns null if no solution (falls back to straight line). */
+    private double[] solveParams(double d, double r1, double r2, double drop, Mode mode) {
         double a = Math.clamp((d * d) / (8 * drop), MIN_A, Double.MAX_VALUE);
         double x0 = d * 0.5;
 
-        if (Math.abs(r1 - r2) > EPS) {
+        if (mode == Mode.BEYOND) {
             double sum = r1 + r2 + 2 * drop;
             if (sum > EPS) {
-                x0 = d * (r1 + drop) / sum;
-                x0 = Math.clamp(x0, MIN_A, d - MIN_A);
+                double temp = d * (r1 + drop) / sum;
+                if (temp < 0.1 * d) {
+                    x0 = -d * 0.5;
+                } else if (temp > 0.9 * d) {
+                    x0 = d * 1.5;
+                } else {
+                    x0 = temp;
+                }
             }
         }
 
+        // Newton iteration
         for (int iter = 0; iter < MAX_ITER; iter++) {
             double cosh1 = Math.cosh(x0 / a);
             double cosh2 = Math.cosh((d - x0) / a);
@@ -179,7 +197,14 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
 
             for (int i = 0; i < LINE_SEARCH_ITER; i++) {
                 double aNew = Math.clamp(a - step * da, MIN_A, Double.MAX_VALUE);
-                double x0New = Math.clamp(x0 - step * dx0, MIN_A, d - MIN_A);
+                double x0New;
+                if (mode == Mode.BETWEEN) {
+                    x0New = Math.clamp(x0 - step * dx0, MIN_A, d - MIN_A);
+                } else {
+                    x0New = x0 - step * dx0;
+                    if (x0New < -d * 10) x0New = -d * 10;
+                    if (x0New > d * 10) x0New = d * 10;
+                }
                 double F1n = aNew * (Math.cosh(x0New / aNew) - 1) - (r1 + drop);
                 double F2n = aNew * (Math.cosh((d - x0New) / aNew) - 1) - (r2 + drop);
                 double res = Math.abs(F1n) + Math.abs(F2n);
@@ -197,7 +222,8 @@ public class LittleShapeCatenary extends LittleShape<CatenaryConfig> {
             if (Math.abs(da) < EPS && Math.abs(dx0) < EPS) break;
         }
 
-        if (Double.isNaN(a) || a < MIN_A || x0 < 0 || x0 > d) return null;
+        if (Double.isNaN(a) || a < MIN_A) return null;
+        if (mode == Mode.BETWEEN && (x0 < 0 || x0 > d)) return null;
         return new double[]{a, x0};
     }
 

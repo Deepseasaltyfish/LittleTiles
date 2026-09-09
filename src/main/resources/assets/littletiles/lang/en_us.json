@@ -460,6 +460,9 @@
     "shape.config.simple": "simple",
     "shape.config.hollow": "hollow",
     "shape.config.drop": "drop",
+    "shape.config.catenary_mode": "mode",
+    "shape.config.catenary_mode.between": "U-shape (between)",
+    "shape.config.catenary_mode.beyond": "J-shape (monotonic)",
     
     "building.toggle.proportional": "Proportional",
     "building.toggle.measurements": "Measurements",
